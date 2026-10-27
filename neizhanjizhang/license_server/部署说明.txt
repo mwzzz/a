@@ -1,0 +1,51 @@
+服务器上需要有这个目录结构：
+
+    /opt/neizhanjizhang/license_server/
+
+也就是把本机 neizhanjizhang 里的 license_server 文件夹上传进去，外层目录名保持为 neizhanjizhang。
+服务器需要已安装 Python 3.9 或更新版本。在 /opt/neizhanjizhang 里执行：
+
+    python3 -m license_server --host 0.0.0.0 --port 8000 --db data/cards.db
+
+浏览器打开 http://公网IP:8000 ，看到 {"ok": true} 就说明服务已起来。
+阿里云安全组要放行 TCP 8000。桌面程序的服务器地址填：
+
+    http://公网IP:8000
+
+发放一张 30 天卡密（在服务器上执行，不要把数据库文件发给别人）：
+
+    python3.11 -m license_server.issue --days 30 --db data/cards.db
+
+给同一张卡增加 30 天。还没到期就从原到期日往后加；已经过期就从今天往后加。卡密不变，正在使用的人不用重新登录：
+
+    python3.11 -m license_server.issue --card 卡密 --days 30 --db data/cards.db
+
+试用开关。开启后，不填或乱填卡密都能登录，已发放的卡仍是一卡一台。关闭后只接受已发放的卡密：
+
+    python3.11 -m license_server.issue --trial on --db data/cards.db
+    python3.11 -m license_server.issue --trial off --db data/cards.db
+
+查看谁正在占用：
+
+    python3.11 -m license_server.issue --list --db data/cards.db
+
+同一张卡可以在多台电脑登录，但同一时间只有一台在线。关掉程序会马上让出；异常退出后约 60 秒没有心跳，别的电脑才能登录。
+
+让服务在重启后仍然运行，可以在服务器上建立 /etc/systemd/system/license-server.service ：
+
+    [Unit]
+    Description=card license server
+    After=network.target
+
+    [Service]
+    WorkingDirectory=/opt/neizhanjizhang
+    ExecStart=/usr/bin/python3 -m license_server --host 0.0.0.0 --port 8000 --db data/cards.db
+    Restart=always
+
+    [Install]
+    WantedBy=multi-user.target
+
+然后执行：
+
+    systemctl daemon-reload
+    systemctl enable --now license-server

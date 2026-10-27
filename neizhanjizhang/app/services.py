@@ -368,7 +368,6 @@ def preview_session(
                 "before": before,
                 "deduct": tea_fee_cents,
                 "after": after,
-                "ok": after >= 0,
             }
         )
     return rows
@@ -395,9 +394,6 @@ def open_session(
     created_at = now_text()
     with transaction(conn):
         players = [_require_player(conn, game_id) for game_id in ids]
-        short = [player["game_id"] for player in players if int(player["deposit_cents"]) < tea_fee_cents]
-        if short:
-            raise AppError("押金不足，本局未写入：" + "、".join(short))
         cursor = conn.execute(
             "INSERT INTO sessions (tea_fee_cents, note, created_at) VALUES (?, ?, ?)",
             (tea_fee_cents, note, created_at),

@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from app.db import Database
@@ -107,23 +109,31 @@ def test_transfer_rejects_self_and_insufficient_balance(db):
     assert list_ledger(db.conn, "b") == []
 
 
-def test_open_session_batch_and_rollback(db):
+def test_open_session_records_negative_deposit(db):
+    create_player(db.conn, "a", "甲")
+    create_player(db.conn, "c", "丙")
+    add_deposit(db.conn, "a", 1000)
+    add_deposit(db.conn, "c", 100)
+
+    session_id = open_session(db.conn, ["a", "c"], 300)
+    assert get_player(db.conn, "a")["deposit_cents"] == 700
+    assert get_player(db.conn, "a")["games_played"] == 1
+    assert get_player(db.conn, "c")["deposit_cents"] == -200
+    assert get_player(db.conn, "c")["games_played"] == 1
+    deducted = list_ledger(db.conn, "c")[0]
+    assert deducted["reason"] == "normal_deduct"
+    assert deducted["session_id"] == session_id
+    assert deducted["balance_before_cents"] == 100
+    assert deducted["balance_after_cents"] == -200
+
+
+def test_open_session_batch_and_zero_tea(db):
     create_player(db.conn, "a", "甲")
     create_player(db.conn, "b", "乙")
     create_player(db.conn, "c", "丙")
     add_deposit(db.conn, "a", 1000)
     add_deposit(db.conn, "b", 800)
     add_deposit(db.conn, "c", 100)
-
-    with pytest.raises(AppError, match="押金不足"):
-        open_session(db.conn, ["a", "c"], 300)
-    assert get_player(db.conn, "a")["deposit_cents"] == 1000
-    assert get_player(db.conn, "a")["games_played"] == 0
-    assert get_player(db.conn, "c")["games_played"] == 0
-    assert db.conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
-    assert db.conn.execute(
-        "SELECT COUNT(*) FROM ledger WHERE reason = 'normal_deduct'"
-    ).fetchone()[0] == 0
 
     session_id = open_session(db.conn, ["a", "b", "a"], 300, note="晚场")
     assert get_player(db.conn, "a")["deposit_cents"] == 700
@@ -170,4 +180,48 @@ def test_import_replaces_database_and_keeps_backup(tmp_path):
     with pytest.raises(AppError, match="不是本程序的账本"):
         database.import_from(foreign)
     assert get_player(database.conn, "p1")["deposit_cents"] == 100
+    database.close()
+
+
+def test_old_database_allows_negative_deposit(tmp_path):
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE players (
+            game_id TEXT PRIMARY KEY,
+            nickname TEXT NOT NULL DEFAULT '',
+            deposit_cents INTEGER NOT NULL DEFAULT 0 CHECK (deposit_cents >= 0),
+            games_played INTEGER NOT NULL DEFAULT 0 CHECK (games_played >= 0),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tea_fee_cents INTEGER NOT NULL CHECK (tea_fee_cents >= 0),
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_game_id TEXT NOT NULL REFERENCES players(game_id),
+            session_id INTEGER REFERENCES sessions(id),
+            reason TEXT NOT NULL,
+            amount_cents INTEGER NOT NULL,
+            balance_before_cents INTEGER NOT NULL CHECK (balance_before_cents >= 0),
+            balance_after_cents INTEGER NOT NULL CHECK (balance_after_cents >= 0),
+            counterparty_game_id TEXT,
+            transfer_group_id TEXT,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        """
+    )
+    conn.close()
+    database = Database(path)
+    create_player(database.conn, "c", "")
+    add_deposit(database.conn, "c", 100)
+    open_session(database.conn, ["c"], 300)
+    assert get_player(database.conn, "c")["deposit_cents"] == -200
     database.close()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -14,7 +15,7 @@ SCHEMA = (
     CREATE TABLE IF NOT EXISTS players (
         game_id TEXT PRIMARY KEY,
         nickname TEXT NOT NULL DEFAULT '',
-        deposit_cents INTEGER NOT NULL DEFAULT 0 CHECK (deposit_cents >= 0),
+        deposit_cents INTEGER NOT NULL DEFAULT 0,
         games_played INTEGER NOT NULL DEFAULT 0 CHECK (games_played >= 0),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -40,8 +41,8 @@ SCHEMA = (
             (reason = 'normal_deduct' AND amount_cents >= 0)
             OR (reason != 'normal_deduct' AND amount_cents > 0)
         ),
-        balance_before_cents INTEGER NOT NULL CHECK (balance_before_cents >= 0),
-        balance_after_cents INTEGER NOT NULL CHECK (balance_after_cents >= 0),
+        balance_before_cents INTEGER NOT NULL,
+        balance_after_cents INTEGER NOT NULL,
         counterparty_game_id TEXT,
         transfer_group_id TEXT,
         note TEXT NOT NULL DEFAULT '',
@@ -73,12 +74,15 @@ SCHEMA = (
 REQUIRED_TABLES = {"players", "sessions", "ledger", "settings"}
 
 
-def project_root() -> Path:
+def install_dir() -> Path:
+    """开发时是项目目录，打包后是 exe 所在目录。账本放在这里，升级程序不会被清掉。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
 
 
 def default_db_path() -> Path:
-    return project_root() / "data" / "deposit.db"
+    return install_dir() / "data" / "deposit.db"
 
 
 def _remove_sidecars(path: Path) -> None:
@@ -134,9 +138,69 @@ class Database:
         assert self.conn is not None
         for statement in SCHEMA:
             self.conn.execute(statement)
+        self._relax_nonnegative_checks()
+        for statement in SCHEMA[-2:]:
+            self.conn.execute(statement)
         self.conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('default_tea_cents', '0')"
         )
+
+    def _table_sql(self, name: str) -> str:
+        assert self.conn is not None
+        row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (name,),
+        ).fetchone()
+        return "" if row is None or row["sql"] is None else row["sql"]
+
+    def _relax_nonnegative_checks(self) -> None:
+        """旧账本不允许负数。开局扣茶水现在可以记成负数，所以去掉这两处限制。"""
+        assert self.conn is not None
+        players_sql = self._table_sql("players")
+        ledger_sql = self._table_sql("ledger")
+        rebuild_players = "deposit_cents >= 0" in players_sql
+        rebuild_ledger = "balance_before_cents >= 0" in ledger_sql or "balance_after_cents >= 0" in ledger_sql
+        if not rebuild_players and not rebuild_ledger:
+            return
+        self.conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            self.conn.execute("BEGIN")
+            if rebuild_players:
+                self.conn.execute("ALTER TABLE players RENAME TO players_old")
+                self.conn.execute(SCHEMA[0])
+                self.conn.execute(
+                    """
+                    INSERT INTO players (
+                        game_id, nickname, deposit_cents, games_played, created_at, updated_at
+                    )
+                    SELECT game_id, nickname, deposit_cents, games_played, created_at, updated_at
+                    FROM players_old
+                    """
+                )
+                self.conn.execute("DROP TABLE players_old")
+            if rebuild_ledger:
+                self.conn.execute("ALTER TABLE ledger RENAME TO ledger_old")
+                self.conn.execute(SCHEMA[2])
+                self.conn.execute(
+                    """
+                    INSERT INTO ledger (
+                        id, player_game_id, session_id, reason, amount_cents,
+                        balance_before_cents, balance_after_cents,
+                        counterparty_game_id, transfer_group_id, note, created_at
+                    )
+                    SELECT id, player_game_id, session_id, reason, amount_cents,
+                           balance_before_cents, balance_after_cents,
+                           counterparty_game_id, transfer_group_id, note, created_at
+                    FROM ledger_old
+                    """
+                )
+                self.conn.execute("DROP TABLE ledger_old")
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            self.conn.execute("PRAGMA foreign_keys = ON")
 
     def close(self) -> None:
         if self.conn is None:

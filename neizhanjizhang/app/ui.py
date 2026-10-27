@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -32,6 +34,12 @@ from PySide6.QtWidgets import (
 )
 
 from app.db import Database
+from app.license_client import (
+    DEFAULT_SERVER_URL,
+    HEARTBEAT_INTERVAL_MS,
+    LicenseSession,
+    note_heartbeat,
+)
 from app.services import (
     AppError,
     add_deposit,
@@ -50,16 +58,275 @@ from app.services import (
     transfer,
 )
 
-COLOR_TEXT = QColor("#1f1f1f")
-COLOR_BAD = QColor("#a12626")
+COLOR_TEXT = QColor("#1E2422")
+COLOR_OK = QColor("#1F6B4A")
+COLOR_BAD = QColor("#9C3B32")
 MONEY_ALIGN = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
 TEXT_ALIGN = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
 
 
+def icon_path() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS")) / "app" / "assets" / "icon.svg"
+    return Path(__file__).resolve().parent / "assets" / "icon.svg"
+
+
+def app_icon() -> QIcon:
+    return QIcon(str(icon_path()))
+
+
+def app_stylesheet() -> str:
+    check_icon = (icon_path().parent / "check.svg").as_posix()
+    chevron_icon = (icon_path().parent / "chevron.svg").as_posix()
+    return f"""
+    QMainWindow, QDialog, QMessageBox {{
+        background: #F3EFE6;
+        color: #1E2422;
+        font-family: "Microsoft YaHei UI";
+        font-size: 13px;
+    }}
+    QWidget#shell {{
+        background: #F3EFE6;
+    }}
+    QWidget#page {{
+        background: transparent;
+    }}
+    QLabel#appTitle {{
+        color: #14352C;
+        font-size: 20px;
+        font-weight: 700;
+    }}
+    QLabel#appHint, QLabel#subtitle {{
+        color: #6E665C;
+    }}
+    QLabel#warn {{
+        color: #7A4E32;
+    }}
+    QLabel#result {{
+        color: #3E4A45;
+    }}
+    QLabel#summary {{
+        background: #F6F1E7;
+        color: #14352C;
+        border: 1px solid #E4D9C8;
+        border-radius: 10px;
+        padding: 8px 12px;
+        font-weight: 600;
+    }}
+    QLabel#selectedCount {{
+        color: #14352C;
+        font-weight: 600;
+        padding: 0 8px;
+    }}
+    QFrame#totalCard {{
+        background: #14352C;
+        border-radius: 12px;
+    }}
+    QLabel#totalCaption {{
+        color: #D5E0D8;
+        font-size: 11px;
+        background: transparent;
+    }}
+    QLabel#totalAmount {{
+        color: #F6EDD8;
+        font-size: 18px;
+        font-weight: 700;
+        background: transparent;
+    }}
+    QTabWidget::pane {{
+        background: #FFFCF6;
+        border: 1px solid #E3D9C8;
+        border-radius: 14px;
+        top: 8px;
+    }}
+    QTabBar::tab {{
+        background: transparent;
+        color: #6E665C;
+        padding: 8px 18px;
+        margin-right: 6px;
+        border-radius: 9px;
+        min-width: 72px;
+    }}
+    QTabBar::tab:selected {{
+        background: #14352C;
+        color: #F6EDD8;
+    }}
+    QTabBar::tab:hover:!selected {{
+        background: #E7E0D2;
+        color: #1E2422;
+    }}
+    QTableWidget {{
+        background: #FFFCF6;
+        alternate-background-color: #F7F4EE;
+        color: #1E2422;
+        border: 1px solid #E3D9C8;
+        border-radius: 10px;
+        gridline-color: transparent;
+        selection-background-color: #E3EFE8;
+        selection-color: #1E2422;
+    }}
+    QTableWidget::item {{
+        border-bottom: 1px solid #EFE8DC;
+        padding: 2px 8px;
+    }}
+    QTableWidget::item:selected {{
+        background: #E3EFE8;
+        color: #1E2422;
+    }}
+    QHeaderView::section {{
+        background: #F6F1E7;
+        color: #5E574E;
+        font-weight: 600;
+        border: none;
+        border-bottom: 1px solid #E3D9C8;
+        padding: 8px 10px;
+    }}
+    QLineEdit, QComboBox {{
+        background: #FFFCF6;
+        color: #1E2422;
+        border: 1px solid #D9D0C2;
+        border-radius: 8px;
+        padding: 6px 8px;
+        min-height: 28px;
+        selection-background-color: #D5E6DC;
+    }}
+    QComboBox {{
+        padding-right: 36px;
+    }}
+    QLineEdit:focus, QComboBox:focus {{
+        border: 1px solid #14352C;
+    }}
+    QComboBox QLineEdit {{
+        border: none;
+        background: transparent;
+        padding: 0 4px;
+        min-height: 0;
+        selection-background-color: #D5E6DC;
+    }}
+    QComboBox::drop-down {{
+        subcontrol-origin: border;
+        subcontrol-position: top right;
+        width: 36px;
+        border: none;
+        border-left: 1px solid #C9BFAE;
+        background: #E7EFE9;
+        border-top-right-radius: 8px;
+        border-bottom-right-radius: 8px;
+    }}
+    QComboBox::drop-down:hover {{
+        background: #D5E6DC;
+    }}
+    QComboBox::down-arrow {{
+        image: url("{chevron_icon}");
+        width: 14px;
+        height: 14px;
+    }}
+    QPushButton {{
+        background: #FFFCF6;
+        color: #1E2422;
+        border: 1px solid #D4CBBC;
+        border-radius: 8px;
+        padding: 6px 14px;
+        min-height: 24px;
+    }}
+    QPushButton:hover {{
+        background: #F6F1E7;
+    }}
+    QPushButton:pressed {{
+        background: #EBE4D6;
+    }}
+    QPushButton:disabled {{
+        color: #A8A093;
+        background: #F4F0E8;
+        border-color: #E4DDD2;
+    }}
+    QPushButton[role="primary"] {{
+        background: #14352C;
+        color: #F6EDD8;
+        border: 1px solid #14352C;
+    }}
+    QPushButton[role="primary"]:hover {{
+        background: #1C4A3E;
+    }}
+    QPushButton[role="primary"]:pressed {{
+        background: #0E261F;
+    }}
+    QPushButton[role="primary"]:disabled {{
+        background: #8AA097;
+        color: #F6EDD8;
+        border-color: #8AA097;
+    }}
+    QPushButton[role="danger"] {{
+        background: #FFFCF6;
+        color: #9C3B32;
+        border: 1px solid #E4C4BE;
+    }}
+    QPushButton[role="danger"]:hover {{
+        background: #F8ECEA;
+    }}
+    QCheckBox {{
+        spacing: 6px;
+        color: #1E2422;
+        background: transparent;
+    }}
+    QCheckBox::indicator {{
+        width: 16px;
+        height: 16px;
+        border: 1px solid #C9BFAE;
+        border-radius: 4px;
+        background: #FFFCF6;
+    }}
+    QCheckBox::indicator:checked {{
+        background: #14352C;
+        border-color: #14352C;
+        image: url("{check_icon}");
+    }}
+    QGroupBox {{
+        background: #FFFCF6;
+        border: 1px solid #E3D9C8;
+        border-radius: 12px;
+        margin-top: 16px;
+        padding: 18px 14px 14px 14px;
+        font-weight: 600;
+        color: #14352C;
+    }}
+    QGroupBox::title {{
+        subcontrol-origin: margin;
+        left: 14px;
+        padding: 0 6px;
+    }}
+    QStatusBar {{
+        background: #14352C;
+        color: #F4EFE4;
+    }}
+    QStatusBar QLabel {{
+        color: #F4EFE4;
+        background: transparent;
+    }}
+    QScrollBar:vertical {{
+        background: transparent;
+        width: 10px;
+        margin: 4px;
+    }}
+    QScrollBar::handle:vertical {{
+        background: #D4CBBC;
+        border-radius: 4px;
+        min-height: 28px;
+    }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+        height: 0;
+    }}
+    """
+
+
+def set_role(widget: QWidget, role: str) -> None:
+    widget.setProperty("role", role)
+
+
 def subtitle(text: str) -> QLabel:
     label = QLabel(text)
+    label.setObjectName("subtitle")
     label.setWordWrap(True)
-    label.setStyleSheet("color: #444444;")
     return label
 
 
@@ -87,7 +354,9 @@ def configure_table(table: QTableWidget) -> None:
     table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
     table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.setShowGrid(False)
     table.verticalHeader().setVisible(False)
+    table.verticalHeader().setDefaultSectionSize(38)
     table.setWordWrap(False)
 
 
@@ -102,11 +371,15 @@ class PlayerDialog(QDialog):
         self.setMinimumWidth(360)
         self.game_id_edit = QLineEdit()
         form = QFormLayout(self)
+        form.setContentsMargins(22, 18, 22, 16)
+        form.setSpacing(12)
         form.addRow("游戏 id", self.game_id_edit)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_button.setText("确定")
+        set_role(ok_button, "primary")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
@@ -131,6 +404,8 @@ class AmountDialog(QDialog):
         self.note_text = ""
         self.target_id = ""
         form = QFormLayout(self)
+        form.setContentsMargins(22, 18, 22, 16)
+        form.setSpacing(12)
         self.target_combo: QComboBox | None = None
         if targets is not None:
             self.target_combo = QComboBox()
@@ -146,7 +421,9 @@ class AmountDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_button.setText("确定")
+        set_role(ok_button, "primary")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
@@ -176,21 +453,35 @@ class PlayersPage(QWidget):
 
     def __init__(self, database: Database, on_changed):
         super().__init__()
+        self.setObjectName("page")
         self.db = database
         self.on_changed = on_changed
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
         layout.addWidget(subtitle("每个玩家用游戏 id 识别。押金是还在管理员这里的余额。双击一行可查看流水。"))
         buttons = QHBoxLayout()
         add_button = QPushButton("新增玩家")
         delete_button = QPushButton("删除")
+        set_role(add_button, "primary")
+        set_role(delete_button, "danger")
         add_button.clicked.connect(self.add_player)
         delete_button.clicked.connect(self.remove_player)
         buttons.addWidget(add_button)
         buttons.addWidget(delete_button)
         buttons.addStretch(1)
-        self.total_label = QLabel("总押金 0.00 元")
-        self.total_label.setStyleSheet("font-size: 16px; font-weight: 600;")
-        buttons.addWidget(self.total_label)
+        card = QFrame()
+        card.setObjectName("totalCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 8, 16, 8)
+        card_layout.setSpacing(0)
+        caption = QLabel("总押金")
+        caption.setObjectName("totalCaption")
+        self.total_label = QLabel("0.00 元")
+        self.total_label.setObjectName("totalAmount")
+        card_layout.addWidget(caption)
+        card_layout.addWidget(self.total_label)
+        buttons.addWidget(card)
         layout.addLayout(buttons)
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["序号", "游戏 id", "押金", "总局数"])
@@ -207,12 +498,14 @@ class PlayersPage(QWidget):
         selected = self.selected_game_id()
         players = list_players(self.db.conn)
         total_cents = sum(int(player["deposit_cents"]) for player in players)
-        self.total_label.setText(f"总押金 {format_yuan(total_cents)} 元")
+        self.total_label.setText(f"{format_yuan(total_cents)} 元")
         self.table.setRowCount(len(players))
         for row, player in enumerate(players):
             self.table.setItem(row, 0, readonly_item(str(row + 1), MONEY_ALIGN))
             self.table.setItem(row, 1, readonly_item(player["game_id"]))
             deposit = readonly_item(format_yuan(player["deposit_cents"]), MONEY_ALIGN)
+            if int(player["deposit_cents"]) < 0:
+                deposit.setForeground(QBrush(COLOR_BAD))
             self.table.setItem(row, 2, deposit)
             games = readonly_item(str(player["games_played"]), MONEY_ALIGN)
             self.table.setItem(row, 3, games)
@@ -281,12 +574,15 @@ class PlayersPage(QWidget):
 class SessionPage(QWidget):
     def __init__(self, database: Database, on_changed):
         super().__init__()
+        self.setObjectName("page")
         self.db = database
         self.on_changed = on_changed
         self._refreshing = False
         self._reset_checks = False
         layout = QVBoxLayout(self)
-        layout.addWidget(subtitle("勾选本局玩家，按茶水批量正常扣押，每人总局数加 1。有人余额不够时，整局不会写入。"))
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        layout.addWidget(subtitle("勾选本局玩家，按茶水批量正常扣押，每人总局数加 1。余额不够也可以开局，扣完后的押金记为负数。"))
         form = QHBoxLayout()
         form.addWidget(QLabel("本局茶水（元）"))
         self.tea_edit = QLineEdit()
@@ -301,12 +597,16 @@ class SessionPage(QWidget):
         buttons = QHBoxLayout()
         select_all = QPushButton("全选")
         select_none = QPushButton("全不选")
+        self.selected_label = QLabel("已选 0 人")
+        self.selected_label.setObjectName("selectedCount")
         self.confirm_button = QPushButton("确认开局")
+        set_role(self.confirm_button, "primary")
         select_all.clicked.connect(lambda: self._set_all(True))
         select_none.clicked.connect(lambda: self._set_all(False))
         self.confirm_button.clicked.connect(self.confirm)
         buttons.addWidget(select_all)
         buttons.addWidget(select_none)
+        buttons.addWidget(self.selected_label)
         buttons.addStretch(1)
         buttons.addWidget(self.confirm_button)
         layout.addLayout(buttons)
@@ -316,7 +616,8 @@ class SessionPage(QWidget):
         )
         configure_table(self.table)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(0, 72)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         for column in (2, 3, 4, 5):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
@@ -330,11 +631,17 @@ class SessionPage(QWidget):
         self.table.blockSignals(True)
         self.table.setRowCount(len(players))
         for row, player in enumerate(players):
-            check = QCheckBox("本局")
+            holder = QWidget()
+            holder.setStyleSheet("background: transparent;")
+            holder_layout = QHBoxLayout(holder)
+            holder_layout.setContentsMargins(0, 0, 0, 0)
+            holder_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            check = QCheckBox()
             check.setProperty("game_id", player["game_id"])
             check.setChecked(player["game_id"] in selected)
             check.toggled.connect(self.refresh_amounts)
-            self.table.setCellWidget(row, 0, check)
+            holder_layout.addWidget(check)
+            self.table.setCellWidget(row, 0, holder)
             self.table.setItem(row, 1, readonly_item(player["game_id"]))
             deposit = readonly_item(format_yuan(player["deposit_cents"]), MONEY_ALIGN)
             deposit.setData(Qt.ItemDataRole.UserRole, int(player["deposit_cents"]))
@@ -347,7 +654,9 @@ class SessionPage(QWidget):
 
     def _check_box(self, row: int) -> QCheckBox | None:
         widget = self.table.cellWidget(row, 0)
-        return widget if isinstance(widget, QCheckBox) else None
+        if widget is None:
+            return None
+        return widget.findChild(QCheckBox)
 
     def selected_ids(self) -> list[str]:
         ids: list[str] = []
@@ -384,6 +693,7 @@ class SessionPage(QWidget):
                 if not check.isChecked():
                     deduct_item.setText("—")
                     after_item.setText("—")
+                    after_item.setForeground(QBrush(COLOR_TEXT))
                     status_item.setText("")
                     status_item.setForeground(QBrush(COLOR_TEXT))
                     continue
@@ -398,14 +708,17 @@ class SessionPage(QWidget):
                 deduct_item.setText(format_yuan(tea))
                 after_item.setText(format_yuan(after))
                 if after < 0:
-                    status_item.setText("押金不足")
+                    after_item.setForeground(QBrush(COLOR_BAD))
+                    status_item.setText("记为负数")
                     status_item.setForeground(QBrush(COLOR_BAD))
                 else:
+                    after_item.setForeground(QBrush(COLOR_TEXT))
                     status_item.setText("可以扣")
-                    status_item.setForeground(QBrush(COLOR_TEXT))
+                    status_item.setForeground(QBrush(COLOR_OK))
         finally:
             self.table.blockSignals(False)
             self._refreshing = False
+            self.selected_label.setText(f"已选 {len(self.selected_ids())} 人")
 
     def _parse_tea(self) -> tuple[int | None, str | None]:
         try:
@@ -427,14 +740,14 @@ class SessionPage(QWidget):
         except AppError as exc:
             QMessageBox.warning(self, "无法完成", str(exc))
             return
-        short = [row["game_id"] for row in preview if not row["ok"]]
-        if short:
-            QMessageBox.warning(self, "无法完成", "押金不足，本局未写入：" + "、".join(short))
-            return
+        negative = [row["game_id"] for row in preview if row["after"] < 0]
+        message = f"确认为 {len(preview)} 名玩家开局？\n每人正常扣押 {format_yuan(tea)} 元，总局数各加 1。"
+        if negative:
+            message += "\n以下玩家扣完后押金为负数：" + "、".join(negative)
         answer = QMessageBox.question(
             self,
             "确认开局",
-            f"确认为 {len(preview)} 名玩家开局？\n每人正常扣押 {format_yuan(tea)} 元，总局数各加 1。",
+            message,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -462,11 +775,14 @@ class SessionPage(QWidget):
 class LedgerPage(QWidget):
     def __init__(self, database: Database, on_changed):
         super().__init__()
+        self.setObjectName("page")
         self.db = database
         self.on_changed = on_changed
         self._game_id = ""
         layout = QVBoxLayout(self)
-        layout.addWidget(subtitle("查询某个游戏 id 的押金流水。最新的记录在最上面。"))
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        layout.addWidget(subtitle("从玩家库选择游戏 id，或输入游戏 id 查询。最新的记录在最上面。"))
         query_row = QHBoxLayout()
         query_row.addWidget(QLabel("游戏 id"))
         self.player_combo = QComboBox()
@@ -474,17 +790,20 @@ class LedgerPage(QWidget):
         self.player_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.player_combo.setMinimumWidth(280)
         query_button = QPushButton("查询")
+        set_role(query_button, "primary")
         query_button.clicked.connect(self.query)
-        self.player_combo.activated.connect(lambda _index: self.query())
+        self.player_combo.activated.connect(self._on_player_picked)
         query_row.addWidget(self.player_combo, 1)
         query_row.addWidget(query_button)
         layout.addLayout(query_row)
         self.summary = QLabel("请查询一个游戏 id")
+        self.summary.setObjectName("summary")
         layout.addWidget(self.summary)
         actions = QHBoxLayout()
         self.add_button = QPushButton("加押金")
         self.refund_button = QPushButton("退押金")
         self.transfer_button = QPushButton("划给其他人")
+        set_role(self.add_button, "primary")
         self.add_button.clicked.connect(self.add_money)
         self.refund_button.clicked.connect(self.refund_money)
         self.transfer_button.clicked.connect(self.transfer_money)
@@ -517,43 +836,34 @@ class LedgerPage(QWidget):
         self.player_combo.blockSignals(True)
         self.player_combo.clear()
         for player in players:
-            self.player_combo.addItem(player_label(player), player["game_id"])
+            self.player_combo.addItem(player["game_id"], player["game_id"])
         self.player_combo.setCurrentText(current_text)
         self.player_combo.blockSignals(False)
         if self._game_id:
             self._load_player(self._game_id, quiet=True)
 
+    def _on_player_picked(self, index: int) -> None:
+        game_id = str(self.player_combo.itemData(index) or "")
+        if game_id:
+            self._load_player(game_id, quiet=False)
+
     def show_player(self, game_id: str) -> None:
         index = self.player_combo.findData(game_id)
-        if index >= 0:
-            self.player_combo.setCurrentIndex(index)
-        else:
+        if index < 0:
             self.player_combo.setCurrentText(game_id)
-        self._load_player(game_id, quiet=False)
+            self._load_player(game_id, quiet=False)
+            return
+        if self.player_combo.currentIndex() == index:
+            self._load_player(game_id, quiet=False)
+            return
+        self.player_combo.setCurrentIndex(index)
 
     def query(self) -> None:
-        game_id = self._resolve_game_id(self.player_combo.currentText())
-        if not game_id:
-            QMessageBox.warning(self, "无法完成", "请输入游戏 id")
+        game_id = self.player_combo.currentText().strip()
+        if not game_id or game_id == "输入或选择游戏 id":
+            QMessageBox.warning(self, "无法完成", "请输入或选择游戏 id")
             return
         self._load_player(game_id, quiet=False)
-
-    def _resolve_game_id(self, text: str) -> str:
-        raw = text.strip()
-        if not raw:
-            return ""
-        data = self.player_combo.currentData()
-        if data and str(data) == raw:
-            return str(data)
-        for index in range(self.player_combo.count()):
-            game_id = str(self.player_combo.itemData(index))
-            player = self._player_by_id(game_id)
-            if player and (raw == game_id or raw == player_label(player)):
-                return game_id
-        return raw
-
-    def _player_by_id(self, game_id: str) -> dict | None:
-        return get_player(self.db.conn, game_id)
 
     def _load_player(self, game_id: str, quiet: bool) -> None:
         player = get_player(self.db.conn, game_id)
@@ -575,9 +885,12 @@ class LedgerPage(QWidget):
         for index, entry in enumerate(rows):
             self.table.setItem(index, 0, readonly_item(entry["created_at"]))
             self.table.setItem(index, 1, readonly_item(entry["reason_label"]))
-            self.table.setItem(
-                index, 2, readonly_item(format_change(entry["signed_amount_cents"]), MONEY_ALIGN)
-            )
+            change = readonly_item(format_change(entry["signed_amount_cents"]), MONEY_ALIGN)
+            if entry["signed_amount_cents"] > 0:
+                change.setForeground(QBrush(COLOR_OK))
+            elif entry["signed_amount_cents"] < 0:
+                change.setForeground(QBrush(COLOR_BAD))
+            self.table.setItem(index, 2, change)
             self.table.setItem(
                 index, 3, readonly_item(format_yuan(entry["balance_before_cents"]), MONEY_ALIGN)
             )
@@ -650,22 +963,30 @@ class LedgerPage(QWidget):
 class HandoverPage(QWidget):
     def __init__(self, database: Database, on_changed):
         super().__init__()
+        self.setObjectName("page")
         self.db = database
         self.on_changed = on_changed
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
         layout.addWidget(
             subtitle(
-                "换班时导出整个账本文件，交给下一位管理员导入。"
+                "交接班时导出整个账本文件，交给下一位管理员导入。"
                 "请使用这里导出的文件，不要直接拷贝正在使用的 deposit.db。"
             )
         )
 
         file_box = QGroupBox("交接账本")
         file_layout = QVBoxLayout(file_box)
-        file_layout.addWidget(QLabel("导入会覆盖这台电脑上的当前账本。导入前会自动把当前账本备份到 data 目录。"))
+        warn = QLabel("导入会覆盖这台电脑上的当前账本。导入前会自动把当前账本备份到 data 目录。")
+        warn.setObjectName("warn")
+        warn.setWordWrap(True)
+        file_layout.addWidget(warn)
         buttons = QHBoxLayout()
         export_button = QPushButton("导出账本…")
         import_button = QPushButton("导入账本…")
+        set_role(export_button, "primary")
+        set_role(import_button, "danger")
         export_button.clicked.connect(self.export_db)
         import_button.clicked.connect(self.import_db)
         buttons.addWidget(export_button)
@@ -674,6 +995,7 @@ class HandoverPage(QWidget):
         file_layout.addLayout(buttons)
         layout.addWidget(file_box)
         self.result = QLabel("")
+        self.result.setObjectName("result")
         self.result.setWordWrap(True)
         self.result.setTextFormat(Qt.TextFormat.PlainText)
         self.result.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -740,50 +1062,129 @@ class HandoverPage(QWidget):
         )
 
 
+class LoginDialog(QDialog):
+    def __init__(self, server_url: str = "", card: str = ""):
+        super().__init__()
+        del server_url
+        self.setWindowTitle("登录")
+        self.setWindowIcon(app_icon())
+        self.setMinimumWidth(360)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 18, 22, 16)
+        layout.setSpacing(12)
+        form = QFormLayout()
+        form.setSpacing(12)
+        self.card_edit = QLineEdit(card)
+        self.card_edit.setPlaceholderText("直接点击登录")
+        form.addRow("卡密", self.card_edit)
+        layout.addLayout(form)
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("warn")
+        self.error_label.setWordWrap(True)
+        layout.addWidget(self.error_label)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = QPushButton("退出")
+        login_button = QPushButton("登录")
+        set_role(login_button, "primary")
+        cancel.clicked.connect(self.reject)
+        login_button.clicked.connect(self.accept)
+        buttons.addWidget(cancel)
+        buttons.addWidget(login_button)
+        layout.addLayout(buttons)
+
+    def show_error(self, message: str) -> None:
+        self.error_label.setText(message)
+
+    def values(self) -> tuple[str, str]:
+        return DEFAULT_SERVER_URL, self.card_edit.text().strip()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, database: Database):
         super().__init__()
         self.db = database
         self.setWindowTitle("押金记账")
-        self.setStyleSheet(
-            """
-            QWidget { font-family: "Microsoft YaHei UI"; font-size: 13px; }
-            QTableWidget {
-                background: #ffffff;
-                alternate-background-color: #f7f7f7;
-                gridline-color: #e6e6e6;
-            }
-            QHeaderView::section {
-                background: #f0f0f0;
-                padding: 6px;
-                border: none;
-                border-bottom: 1px solid #d0d0d0;
-            }
-            QLineEdit, QComboBox { padding: 4px 6px; min-height: 22px; }
-            QPushButton { padding: 6px 14px; min-height: 22px; }
-            QGroupBox { font-weight: 600; margin-top: 12px; }
-            QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }
-            """
-        )
+        self.setWindowIcon(app_icon())
         self.players_page = PlayersPage(database, self.notify)
         self.session_page = SessionPage(database, self.notify)
         self.ledger_page = LedgerPage(database, self.notify)
         self.handover_page = HandoverPage(database, self.notify)
         self.players_page.open_player.connect(self.open_player_ledger)
 
+        brand = QHBoxLayout()
+        brand.setSpacing(10)
+        mark = QLabel()
+        mark.setPixmap(app_icon().pixmap(32, 32))
+        title = QLabel("押金记账")
+        title.setObjectName("appTitle")
+        hint = QLabel("本机账本")
+        hint.setObjectName("appHint")
+        brand.addWidget(mark)
+        brand.addWidget(title)
+        brand.addWidget(hint)
+        brand.addStretch(1)
+
         self.tabs = QTabWidget()
         self.tabs.addTab(self.players_page, "玩家库")
         self.tabs.addTab(self.session_page, "开一局")
         self.tabs.addTab(self.ledger_page, "押金记录")
-        self.tabs.addTab(self.handover_page, "交班")
+        self.tabs.addTab(self.handover_page, "交接班")
         central = QWidget()
+        central.setObjectName("shell")
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setContentsMargins(20, 16, 20, 12)
+        layout.setSpacing(4)
+        layout.addLayout(brand)
         layout.addWidget(self.tabs)
         self.setCentralWidget(central)
-        self.setMinimumSize(960, 640)
+        self.setMinimumSize(980, 660)
+        self._license: LicenseSession | None = None
+        self._expires_at = ""
+        self._heartbeat_failures = 0
+        self._license_locked = False
+        self._timer: QTimer | None = None
         self.notify()
         self.tabs.currentChanged.connect(self._refresh_tab)
+
+    def start_license_watch(self, session: LicenseSession) -> None:
+        self._license = session
+        self._expires_at = session.expires_at
+        self._heartbeat_failures = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(HEARTBEAT_INTERVAL_MS)
+        self._timer.timeout.connect(self._on_heartbeat)
+        self._timer.start()
+        self.notify()
+
+    def _on_heartbeat(self) -> None:
+        if self._license is None or self._license_locked:
+            return
+        result = self._license.heartbeat()
+        self._heartbeat_failures, must_lock = note_heartbeat(self._heartbeat_failures, result)
+        if result.ok and result.expires_at:
+            self._expires_at = result.expires_at
+            self.notify()
+        if must_lock:
+            self.lock_for_license(result.message)
+
+    def lock_for_license(self, message: str) -> None:
+        if self._license_locked:
+            return
+        self._license_locked = True
+        if self._timer is not None:
+            self._timer.stop()
+        self.centralWidget().setEnabled(False)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("授权已失效")
+        box.setText(message + "\n请退出程序。")
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        button = box.button(QMessageBox.StandardButton.Ok)
+        if button is not None:
+            button.setText("退出")
+        box.exec()
+        self.close()
 
     def notify(self) -> None:
         self.players_page.reload()
@@ -792,8 +1193,9 @@ class MainWindow(QMainWindow):
         self.handover_page.reload()
         players = list_players(self.db.conn)
         total_cents = sum(int(player["deposit_cents"]) for player in players)
+        expiry = f"    卡密到期：{self._expires_at}" if self._expires_at else ""
         self.statusBar().showMessage(
-            f"账本：{self.db.path}    玩家 {len(players)} 人    总押金 {format_yuan(total_cents)} 元"
+            f"账本：{self.db.path}    玩家 {len(players)} 人    总押金 {format_yuan(total_cents)} 元{expiry}"
         )
 
     def _refresh_tab(self, index: int) -> None:
@@ -806,5 +1208,10 @@ class MainWindow(QMainWindow):
         self.ledger_page.show_player(game_id)
 
     def closeEvent(self, event) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+        if self._license is not None:
+            self._license.logout()
+            self._license = None
         self.db.close()
         super().closeEvent(event)

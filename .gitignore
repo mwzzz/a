@@ -3,3 +3,13 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .cursor/
+
+# 打包产物
+neizhanjizhang/build/
+neizhanjizhang/dist/
+neizhanjizhang/release/
+
+# 本地授权与运行时数据
+neizhanjizhang/data/license.json
+neizhanjizhang/data/app.lock
+neizhanjizhang/data/backup-*.db
