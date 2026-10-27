@@ -1,0 +1,198 @@
+"""SQLite 连接、建表，以及交班用的整库导出和导入。"""
+
+from __future__ import annotations
+
+import shutil
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+
+from app.services import AppError
+
+SCHEMA = (
+    """
+    CREATE TABLE IF NOT EXISTS players (
+        game_id TEXT PRIMARY KEY,
+        nickname TEXT NOT NULL DEFAULT '',
+        deposit_cents INTEGER NOT NULL DEFAULT 0 CHECK (deposit_cents >= 0),
+        games_played INTEGER NOT NULL DEFAULT 0 CHECK (games_played >= 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tea_fee_cents INTEGER NOT NULL CHECK (tea_fee_cents >= 0),
+        note TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ledger (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        player_game_id TEXT NOT NULL REFERENCES players(game_id),
+        session_id INTEGER REFERENCES sessions(id),
+        reason TEXT NOT NULL CHECK (
+            reason IN ('normal_deduct', 'refund', 'add_deposit', 'transfer_out', 'transfer_in')
+        ),
+        amount_cents INTEGER NOT NULL CHECK (
+            (reason = 'normal_deduct' AND amount_cents >= 0)
+            OR (reason != 'normal_deduct' AND amount_cents > 0)
+        ),
+        balance_before_cents INTEGER NOT NULL CHECK (balance_before_cents >= 0),
+        balance_after_cents INTEGER NOT NULL CHECK (balance_after_cents >= 0),
+        counterparty_game_id TEXT,
+        transfer_group_id TEXT,
+        note TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        CHECK (
+            (reason = 'normal_deduct' AND session_id IS NOT NULL)
+            OR (reason != 'normal_deduct')
+        ),
+        CHECK (
+            (
+                reason IN ('transfer_out', 'transfer_in')
+                AND counterparty_game_id IS NOT NULL
+                AND transfer_group_id IS NOT NULL
+            )
+            OR (reason NOT IN ('transfer_out', 'transfer_in'))
+        )
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_ledger_player ON ledger(player_game_id, id)",
+    "CREATE INDEX IF NOT EXISTS idx_ledger_session ON ledger(session_id)",
+)
+
+REQUIRED_TABLES = {"players", "sessions", "ledger", "settings"}
+
+
+def project_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def default_db_path() -> Path:
+    return project_root() / "data" / "deposit.db"
+
+
+def _remove_sidecars(path: Path) -> None:
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(path) + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
+
+
+def validate_ledger_file(path: Path) -> None:
+    if not path.is_file():
+        raise AppError("找不到要导入的文件")
+    uri = path.resolve().as_uri() + "?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error as exc:
+        raise AppError("这个文件不是本程序的账本") from exc
+    try:
+        try:
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()
+            names = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+        except sqlite3.Error as exc:
+            raise AppError("这个文件不是本程序的账本") from exc
+    finally:
+        conn.close()
+    if integrity is None or integrity[0] != "ok":
+        raise AppError("账本文件已损坏")
+    if not REQUIRED_TABLES <= names:
+        raise AppError("这个文件不是本程序的账本")
+
+
+class Database:
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn: sqlite3.Connection | None = None
+        self._connect()
+        self._init_schema()
+
+    def _connect(self) -> None:
+        self.conn = sqlite3.connect(self.path, isolation_level=None)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("PRAGMA busy_timeout = 3000")
+        self.conn.execute("PRAGMA journal_mode = DELETE")
+
+    def _init_schema(self) -> None:
+        assert self.conn is not None
+        for statement in SCHEMA:
+            self.conn.execute(statement)
+        self.conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('default_tea_cents', '0')"
+        )
+
+    def close(self) -> None:
+        if self.conn is None:
+            return
+        try:
+            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error:
+            pass
+        self.conn.close()
+        self.conn = None
+
+    def export_to(self, dest: Path) -> None:
+        if self.conn is None:
+            raise AppError("账本尚未打开")
+        dest = Path(dest).resolve()
+        if dest == self.path.resolve():
+            raise AppError("不能把账本导出覆盖当前正在使用的文件")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        temporary = dest.with_name(dest.name + ".tmp")
+        if temporary.exists():
+            temporary.unlink()
+        target = sqlite3.connect(temporary)
+        try:
+            self.conn.backup(target)
+        except Exception:
+            target.close()
+            temporary.unlink(missing_ok=True)
+            raise
+        target.close()
+        temporary.replace(dest)
+
+    def import_from(self, src: Path) -> Path:
+        """先把当前账本备份，再整库替换。失败时恢复备份。"""
+        if self.conn is None:
+            raise AppError("账本尚未打开")
+        src = Path(src).resolve()
+        if src == self.path.resolve():
+            raise AppError("不能导入当前正在使用的账本")
+        validate_ledger_file(src)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        backup_path = self.path.parent / f"backup-before-import-{stamp}.db"
+        self.export_to(backup_path)
+        self.close()
+        _remove_sidecars(self.path)
+        try:
+            shutil.copy2(src, self.path)
+            _remove_sidecars(self.path)
+            validate_ledger_file(self.path)
+        except Exception as exc:
+            shutil.copy2(backup_path, self.path)
+            _remove_sidecars(self.path)
+            self._connect()
+            self._init_schema()
+            if isinstance(exc, AppError):
+                raise
+            raise AppError("导入失败，已恢复导入前的账本") from exc
+        self._connect()
+        self._init_schema()
+        return backup_path

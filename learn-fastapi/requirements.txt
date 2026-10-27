@@ -1,0 +1,3 @@
+# 六课只用这两个包。Pydantic 会随 FastAPI 一起装好。
+fastapi
+uvicorn

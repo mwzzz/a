@@ -1,0 +1,34 @@
+{
+  "zabbix": {
+    "url": "http://zabbix.example.com/api_jsonrpc.php",
+    "user": "api_user",
+    "password": "change_me",
+    "item_keys": [
+      "system.uptime",
+      "system.hw.uptime"
+    ],
+    "value_unit": "seconds"
+  },
+  "rules": {
+    "high_days": 400,
+    "drop_curr_days": 30
+  },
+  "snapshot": {
+    "path": "snapshot.json"
+  },
+  "mail": {
+    "enabled": false,
+    "smtp_host": "smtp.example.com",
+    "smtp_port": 465,
+    "use_ssl": true,
+    "user": "noreply@example.com",
+    "password": "change_me",
+    "from": "noreply@example.com",
+    "default_to": [
+      "ops@example.com"
+    ],
+    "subject_prefix": "[Uptime巡检]"
+  },
+  "dry_run": true,
+  "write_snapshot": true
+}
