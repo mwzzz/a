@@ -3,11 +3,16 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .cursor/
+.workbuddy/
+neizhanjizhang/.workbuddy/
 
 # 打包产物
 neizhanjizhang/build/
 neizhanjizhang/dist/
 neizhanjizhang/release/
+
+# 官网里的安装包副本（由 tools/build_site.py 从 release 复制）
+neizhanjizhang/site/downloads/*.zip
 
 # 本地授权与运行时数据
 neizhanjizhang/data/license.json

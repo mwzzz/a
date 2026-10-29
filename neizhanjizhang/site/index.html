@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>押金记账 · 给游戏馆用的押金台账程序</title>
+<meta name="description" content="押金记账是一款 Windows 本机台账程序。玩家押金、开一局扣茶水、退押金与划转、交接班整库交接，一台电脑跑完全流程。账本存在自己电脑上，解压即用，不需要注册账号。">
+<meta name="theme-color" content="#14352C">
+<link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body id="top">
+<a class="skip" href="#download">直接跳到下载</a>
+
+<header class="topbar">
+  <a class="brand" href="#top" aria-label="押金记账首页">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 64 64"><rect width="64" height="64" rx="15" fill="#14352C"/><circle cx="32" cy="34.5" r="19" fill="#C6A15B" opacity=".28"/><circle cx="32" cy="31" r="19" fill="#F6EDD8"/><circle cx="32" cy="31" r="15.4" fill="none" stroke="#8C6A32" stroke-width="1.7"/><path d="M22 25.8h20M22 31.4h20M24.5 37h15" fill="none" stroke="#14352C" stroke-width="2.5" stroke-linecap="round"/></svg>
+    </span>
+    <span class="brand-text">押金记账<em>押金台账</em></span>
+  </a>
+  <nav class="nav" aria-label="主导航">
+    <a href="#why">解决什么</a>
+    <a href="#pages">四个页面</a>
+    <a href="#install">怎么装</a>
+    <a href="#faq">常见问题</a>
+  </nav>
+  <a class="btn btn-primary btn-sm" href="#download">下载</a>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="hero-copy">
+      <p class="eyebrow">Windows 桌面程序 · 账本在本机</p>
+      <h1>押金、茶水、交接，<br><span class="hl">一本台账</span>管到底。</h1>
+      <p class="lede">
+        给游戏馆、桌游店、电竞座位用的押金账本。玩家交了多少押金、开一局扣掉多少茶水、退给谁、划给谁，
+        每一笔都留流水。不需要注册账号，不用把名单丢进群里对账。
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary btn-lg" id="download-btn" href="downloads/yajinjizhang-20261029.zip" download="押金记账.zip">
+          下载 Windows 版
+          <span class="btn-meta" id="dl-size">57.1 MB</span>
+        </a>
+        <a class="btn btn-ghost" href="#pages">先看看界面</a>
+      </div>
+      <p class="hero-note">
+        解压即用 · 免安装 · 版本 <span id="hero-version">2026.10.29</span>
+        · 需要 <span id="hero-files">248</span> 个文件齐全才能运行
+      </p>
+    </div>
+
+    <div class="hero-demo">
+      <div class="appwin" aria-label="押金记账界面示意，可切换四个页面">
+        <div class="appwin-bar">
+          <span class="appwin-coins" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="appwin-title">押金记账</span>
+          <span class="appwin-spacer"></span>
+          <span class="appwin-live"><i></i>授权正常</span>
+        </div>
+        <div class="appwin-tabs" role="tablist">
+          <button class="tab is-active" role="tab" aria-selected="true" data-tab="players">玩家库</button>
+          <button class="tab" role="tab" aria-selected="false" data-tab="session">开一局</button>
+          <button class="tab" role="tab" aria-selected="false" data-tab="ledger">押金记录</button>
+          <button class="tab" role="tab" aria-selected="false" data-tab="handover">交接班</button>
+        </div>
+
+        <div class="appwin-body">
+          <!-- 玩家库 -->
+          <div class="pane is-active" id="pane-players" role="tabpanel">
+            <div class="pane-head">
+              <span class="pane-hint">按总局数排序，序号就是当前行号</span>
+              <span class="totalcard"><small>总押金</small><b>3 430.00 元</b></span>
+            </div>
+            <table class="mtable">
+              <thead><tr><th>序号</th><th>游戏 id</th><th class="num">押金</th><th class="num">总局数</th><th>备注</th></tr></thead>
+              <tbody>
+                <tr><td>1</td><td>东子</td><td class="num">120.00</td><td class="num">18</td><td class="mute">常客</td></tr>
+                <tr><td>2</td><td>老陈</td><td class="num">88.00</td><td class="num">14</td><td class="mute">—</td></tr>
+                <tr><td>3</td><td>阿凯</td><td class="num">60.00</td><td class="num">11</td><td class="mute">晚场</td></tr>
+                <tr><td>4</td><td>小胖</td><td class="num">45.00</td><td class="num">9</td><td class="mute">—</td></tr>
+                <tr><td>5</td><td>阿 May</td><td class="num">30.00</td><td class="num">7</td><td class="mute">周末</td></tr>
+              </tbody>
+            </table>
+            <div class="pane-foot"><span class="chip">新增玩家</span><span class="chip">批量导入</span><span class="chip">导出玩家库</span></div>
+          </div>
+
+          <!-- 开一局 -->
+          <div class="pane" id="pane-session" role="tabpanel">
+            <div class="pane-head">
+              <div class="field">
+                <small>本局茶水（元）</small>
+                <div class="field-row"><span class="input">2.00</span><span class="chip chip-toggle">选前 10 个</span></div>
+              </div>
+              <span class="pane-hint">已选 4 人</span>
+            </div>
+            <table class="mtable">
+              <thead><tr><th>选</th><th>游戏 id</th><th class="num">当前押金</th><th class="num">本局扣除</th><th class="num">扣后押金</th><th>状态</th></tr></thead>
+              <tbody>
+                <tr class="picked"><td><span class="cbox on"></span></td><td>东子</td><td class="num">120.00</td><td class="num">−2.00</td><td class="num">118.00</td><td class="ok">可以扣</td></tr>
+                <tr class="picked"><td><span class="cbox on"></span></td><td>老陈</td><td class="num">88.00</td><td class="num">−2.00</td><td class="num">86.00</td><td class="ok">可以扣</td></tr>
+                <tr class="picked"><td><span class="cbox on"></span></td><td>阿凯</td><td class="num">60.00</td><td class="num">−2.00</td><td class="num">58.00</td><td class="ok">可以扣</td></tr>
+                <tr class="picked"><td><span class="cbox on"></span></td><td>小胖</td><td class="num">1.00</td><td class="num">−2.00</td><td class="num">−1.00</td><td class="warn">记为负数</td></tr>
+                <tr><td><span class="cbox"></span></td><td>阿 May</td><td class="num">30.00</td><td class="num">−2.00</td><td class="num">28.00</td><td class="mute">未选</td></tr>
+              </tbody>
+            </table>
+            <div class="pane-foot"><span class="note-warn">以下玩家扣完后押金为负数：小胖</span><span class="chip chip-solid">确认开局</span></div>
+          </div>
+
+          <!-- 押金记录 -->
+          <div class="pane" id="pane-ledger" role="tabpanel">
+            <div class="pane-head">
+              <div class="field">
+                <small>游戏 id</small>
+                <div class="field-row"><span class="input">东子</span><span class="chip">查询</span></div>
+              </div>
+              <span class="pane-hint">当前押金 118.00 元</span>
+            </div>
+            <table class="mtable">
+              <thead><tr><th>时间</th><th>原因</th><th class="num">变动金额</th><th class="num">操作后押金</th><th class="num">局号</th></tr></thead>
+              <tbody>
+                <tr><td>10-28 21:04</td><td>开一局</td><td class="num out">−2.00</td><td class="num">118.00</td><td class="num muted">#47</td></tr>
+                <tr><td>10-28 19:12</td><td>加押金</td><td class="num in">+100.00</td><td class="num">120.00</td><td class="num muted">—</td></tr>
+                <tr><td>10-27 20:51</td><td>划给 老陈</td><td class="num out">−20.00</td><td class="num">20.00</td><td class="num muted">—</td></tr>
+                <tr><td>10-27 18:30</td><td>退押金</td><td class="num out">−80.00</td><td class="num">0.00</td><td class="num muted">—</td></tr>
+              </tbody>
+            </table>
+            <div class="pane-foot"><span class="chip">加押金</span><span class="chip">退押金</span><span class="chip">划给其他人</span></div>
+          </div>
+
+          <!-- 交接班 -->
+          <div class="pane" id="pane-handover" role="tabpanel">
+            <div class="handover">
+              <p class="handover-lead">交接班时导出整个账本文件，交给下一位管理员导入。</p>
+              <div class="handover-cards">
+                <div class="hcard">
+                  <b>导出账本</b>
+                  <span>得到一份 .db 文件，含全部玩家与流水</span>
+                  <span class="chip">导出账本…</span>
+                </div>
+                <div class="hcard">
+                  <b>导入账本</b>
+                  <span>覆盖本机账本前，先自动留一份备份</span>
+                  <span class="chip">导入账本…</span>
+                </div>
+              </div>
+              <p class="handover-foot">导入前会在本机留一份 <code>backup-before-import-…db</code>，覆盖错了还能换回来。</p>
+              <p class="handover-foot">Excel 导出只是当时的名单快照，不能代替账本交接。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="appwin-status">
+          <span id="status-text">本机账本 · 12 位玩家 · 总押金 3 430.00 元</span>
+        </div>
+      </div>
+      <p class="demo-caption">界面示意，点击上方标签可切换四个页面。</p>
+    </div>
+  </section>
+
+  <section class="strip" aria-label="产品概况">
+    <div><b>4</b><span>个页面跑完全流程</span></div>
+    <div><b>0</b><span>账号、注册、手机号</span></div>
+    <div><b>本机</b><span>账本是自己的一个文件</span></div>
+    <div><b>到分</b><span>金额按分存储，不丢小数</span></div>
+  </section>
+
+  <section class="band" id="why">
+    <div class="band-head">
+      <p class="eyebrow">为什么不是一张 Excel</p>
+      <h2>押金对不上，往往不是算错，<br>是没有账可查。</h2>
+    </div>
+    <div class="cards">
+      <article class="card">
+        <h3>谁交了多少，只剩聊天记录</h3>
+        <p>押金收在微信里、名单记在纸上，退钱时要把几周的聊天翻一遍。程序里每位玩家一行：押金、总局数、备注，随查随有。</p>
+      </article>
+      <article class="card">
+        <h3>茶水扣几次，全凭印象</h3>
+        <p>开一局就写一条流水，扣了多少、扣完还剩多少、属于第几局，都落库。改输入框不会追改已经开过的局。</p>
+      </article>
+      <article class="card">
+        <h3>换人值班，账就断了</h3>
+        <p>交接的是整个账本文件，不是一张截图。新管理员导入后能看到每位玩家的全部历史流水，接着往下记。</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="band band-alt" id="pages">
+    <div class="band-head">
+      <p class="eyebrow">四个页面</p>
+      <h2>收钱、开局、查账、交班，<br>一条动线走完。</h2>
+    </div>
+    <div class="pages-grid">
+      <article class="page-card">
+        <span class="page-no">01</span>
+        <h3>玩家库</h3>
+        <p class="page-sub">一屏看清谁还剩多少押金</p>
+        <ul>
+          <li>游戏 id、押金、总局数、备注，按总局数从高到低排</li>
+          <li>总押金常驻页面上方，对现金不用按计算器</li>
+          <li>批量导入 txt / csv，一行一个，可带备注</li>
+          <li>导出 Excel 快照，用来对账或发给店主</li>
+          <li>只有押金为 0 才允许删除，避免误删有余额的人</li>
+        </ul>
+      </article>
+      <article class="page-card">
+        <span class="page-no">02</span>
+        <h3>开一局</h3>
+        <p class="page-sub">选人、填茶水、确认，三步</p>
+        <ul>
+          <li>「选前 10 个」一次勾上最常来的十位，再点一次取消</li>
+          <li>名单按最近一次扣茶水的时间排，熟客在前</li>
+          <li>确认前就能看到每个人的「扣后押金」</li>
+          <li>扣成负数的会单独列出来，再让你确认一次</li>
+          <li>确认那刻的茶水写进本局，之后再改不影响历史</li>
+        </ul>
+      </article>
+      <article class="page-card">
+        <span class="page-no">03</span>
+        <h3>押金记录</h3>
+        <p class="page-sub">每一笔钱都有出处</p>
+        <ul>
+          <li>加押金、退押金、划给其他人，三种动作都记流水</li>
+          <li>流水含时间、原因、变动额、当时押金、操作后押金、局号</li>
+          <li>游戏 id 可以下拉选，也可以打字回车直接查</li>
+          <li>划转两边同时落账，不会出现只扣不进</li>
+          <li>退押金和划出不能让余额低于押金，负数账户会挡住</li>
+        </ul>
+      </article>
+      <article class="page-card">
+        <span class="page-no">04</span>
+        <h3>交接班</h3>
+        <p class="page-sub">换人、换电脑都不断账</p>
+        <ul>
+          <li>导出的是整个账本文件，含全部玩家与流水</li>
+          <li>在新电脑上导入，接着原来的账往下记</li>
+          <li>导入前自动在本机留一份备份，覆盖错了也有退路</li>
+          <li>Excel 只是名单快照，交接只认账本文件</li>
+        </ul>
+      </article>
+    </div>
+  </section>
+
+  <section class="band" id="install">
+    <div class="band-head">
+      <p class="eyebrow">怎么装</p>
+      <h2>解压、双击、输入卡密，<br>三步就能开局。</h2>
+    </div>
+    <ol class="steps">
+      <li>
+        <span class="step-no">1</span>
+        <b>下载并解压</b>
+        <p>把 zip 解压到任意文件夹，建议放在 D 盘这类平时不会清空的位置，不要只把 <code>押金记账.exe</code> 单独拖出来。</p>
+      </li>
+      <li>
+        <span class="step-no">2</span>
+        <b>双击运行</b>
+        <p>运行文件夹里的 <code>押金记账.exe</code>。同目录的 <code>_internal</code> 文件夹是运行库，删掉程序就起不来。</p>
+      </li>
+      <li>
+        <span class="step-no">3</span>
+        <b>输入卡密</b>
+        <p>第一次打开会要求卡密，向管理员索取。进去后先批量导入玩家，或从上一个账本导入，再开始开一局。</p>
+      </li>
+    </ol>
+    <p class="install-note">
+      账本会自动建在 exe 旁边的 <code>data\deposit.db</code>。要备份，就把这个 <code>data</code> 文件夹整个复制走。
+    </p>
+  </section>
+
+  <section class="download" id="download">
+    <div class="download-inner">
+      <div class="download-copy">
+        <p class="eyebrow light">当前版本</p>
+        <h2>押金记账 <span id="dl-version">2026.10.29</span></h2>
+        <p class="download-lede">Windows 10 / 11 64 位 · 免安装 · 解压后双击即用</p>
+        <dl class="meta">
+          <div><dt>安装包大小</dt><dd id="dl-size-2">57.1 MB</dd></div>
+          <div><dt>文件数</dt><dd id="dl-files">248 个</dd></div>
+          <div><dt>打包日期</dt><dd id="dl-built">2026-10-29</dd></div>
+          <div><dt>SHA-256</dt><dd class="hash" id="dl-hash" title="点击复制">见清单</dd></div>
+        </dl>
+      </div>
+      <div class="download-action">
+        <a class="btn btn-gold btn-xl" id="download-btn-2" href="downloads/yajinjizhang-20261029.zip" download="押金记账.zip">
+          下载 zip 安装包
+        </a>
+        <p class="download-foot">
+          不支持 Windows 7 与 32 位系统。<br>
+          首次打开若被系统提示拦截，点「更多信息 → 仍要运行」。
+        </p>
+        <p class="download-foot">
+          装好后没反应、或者闪退，看 exe 同目录的 <code>error.log</code>。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="license">
+    <div class="band-head">
+      <p class="eyebrow">授权</p>
+      <h2>一台电脑一份卡，账本始终是自己的。</h2>
+    </div>
+    <div class="cards cards-3">
+      <article class="card">
+        <h3>卡密登录</h3>
+        <p>程序打开时输入卡密。同一张卡可以装在多台电脑上，但同一时间只允许一台在线，关掉程序就立刻让出。</p>
+      </article>
+      <article class="card">
+        <h3>只有授权在联网</h3>
+        <p>验证与心跳走网络，账本数据不上传，也不需要登录任何账号。断网时已开着的程序会在几分钟内锁住，账本文件不受影响。</p>
+      </article>
+      <article class="card">
+        <h3>过期就续，卡号不变</h3>
+        <p>卡到期由管理员在原卡上加天数，卡密不变；正在用的人不用退出重登，加完继续用。</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="band band-alt" id="faq">
+    <div class="band-head">
+      <p class="eyebrow">常见问题</p>
+      <h2>上手前想知道的几件事</h2>
+    </div>
+    <div class="faq">
+      <details open>
+        <summary>数据存在哪里？会不会被上传？</summary>
+        <p>存在你自己电脑上，是 exe 旁边 <code>data\deposit.db</code> 这个 SQLite 文件。程序只把卡密和机器码发给授权服务器做验证，玩家名单和流水不出本机。</p>
+      </details>
+      <details>
+        <summary>必须一直联网吗？</summary>
+        <p>打开程序时要能连上授权服务，之后大约每 20 秒一次心跳。连续两次连不上，界面会锁住并只允许退出。网络恢复后重新打开、重新登录即可，账本数据一直都在。</p>
+      </details>
+      <details>
+        <summary>换电脑怎么把账带走？</summary>
+        <p>旧电脑「交接班 → 导出账本」，得到一个 .db 文件；新电脑上「交接班 → 导入账本」，选这个文件即可。导入前程序会在本机先备份一份当前账本。</p>
+      </details>
+      <details>
+        <summary>误开了一局，能撤销吗？</summary>
+        <p>不能。局数和扣掉的茶水都已经写下，需要把押金补回去，就用「押金记录 → 加押金」记一笔，流水里会留下这条更正记录。</p>
+      </details>
+      <details>
+        <summary>押金会被扣成负数吗？</summary>
+        <p>会。茶水大于当前押金时，确认前会把这些人单独列出来，确认后照记，余额变负；之后加押金补上。这样做是为了不让欠账从账面上消失。</p>
+      </details>
+      <details>
+        <summary>导出的 Excel 能当交接文件吗？</summary>
+        <p>不能。Excel 只是导出那一刻的玩家名单快照，没有历史流水。交接只认导出的整个账本文件。</p>
+      </details>
+      <details>
+        <summary>为什么 Windows 会弹「已保护你的电脑」？</summary>
+        <p>安装包没有做代码签名，SmartScreen 会对陌生的 exe 提示一次。点「更多信息」，再点「仍要运行」就可以。文件是从这里下载的、SHA-256 与下载页一致，就不必担心。</p>
+      </details>
+      <details>
+        <summary>有 Mac 或网页版吗？</summary>
+        <p>目前只提供 Windows 版本，界面是桌面原生窗口，没有网页版，也不需要浏览器。</p>
+      </details>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="footer-main">
+    <div class="footer-brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64"><rect width="64" height="64" rx="15" fill="#C6A15B"/><circle cx="32" cy="31" r="19" fill="#F6EDD8"/><circle cx="32" cy="31" r="15.4" fill="none" stroke="#8C6A32" stroke-width="1.7"/><path d="M22 25.8h20M22 31.4h20M24.5 37h15" fill="none" stroke="#14352C" stroke-width="2.5" stroke-linecap="round"/></svg>
+      </span>
+      <div>
+        <b>押金记账</b>
+        <p>给游戏馆用的本机押金台账。</p>
+      </div>
+    </div>
+    <div class="changelog">
+      <h4>更新记录</h4>
+      <ul>
+        <li><time>2026-10-29</time> 导入他人账本不再带进「只读」属性；文件夹不可写时给出中文说明。</li>
+        <li><time>2026-10-29</time> 开一局的「全选 / 全不选」改为「选前 10 个」，不足十人时选全部。</li>
+        <li><time>2026-10-28</time> 茶水金额按局记录，改输入框不再影响已开过的局。</li>
+        <li><time>2026-10-27</time> 卡片式总额、四页布局与交接班整库导入导出。</li>
+      </ul>
+    </div>
+  </div>
+  <p class="footer-bottom">© <span id="year">2026</span> 押金记账 · 本页下载的安装包未做代码签名，请以本页 SHA-256 校验。</p>
+</footer>
+
+<script src="assets/site.js"></script>
+</body>
+</html>
