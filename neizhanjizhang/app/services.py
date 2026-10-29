@@ -6,6 +6,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from pathlib import Path
 from typing import Iterator
 from uuid import uuid4
 
@@ -170,23 +171,75 @@ def _set_balance(
     )
 
 
-def create_player(conn: sqlite3.Connection, game_id: str, nickname: str = "") -> str:
+def create_player(conn: sqlite3.Connection, game_id: str, nickname: str = "", remark: str = "") -> str:
     game_id = normalize_game_id(game_id)
     nickname = normalize_nickname(nickname)
+    remark = _note(remark)
     created_at = now_text()
     try:
         with transaction(conn):
             conn.execute(
                 """
                 INSERT INTO players (
-                    game_id, nickname, deposit_cents, games_played, created_at, updated_at
-                ) VALUES (?, ?, 0, 0, ?, ?)
+                    game_id, nickname, deposit_cents, games_played, created_at, updated_at, remark
+                ) VALUES (?, ?, 0, 0, ?, ?, ?)
                 """,
-                (game_id, nickname, created_at, created_at),
+                (game_id, nickname, created_at, created_at, remark),
             )
     except sqlite3.IntegrityError as exc:
         raise AppError("游戏 id 已存在") from exc
     return game_id
+
+
+def parse_player_import_lines(text: str) -> list[tuple[int, str, str]]:
+    """每行一个玩家。返回行号、游戏 id 原文、备注。"""
+    rows: list[tuple[int, str, str]] = []
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        game_id = line
+        remark = ""
+        for separator in ("\t", ",", "，"):
+            if separator in line:
+                game_id, remark = line.split(separator, 1)
+                break
+        rows.append((line_no, game_id.strip(), remark.strip()))
+    return rows
+
+
+def import_players(conn: sqlite3.Connection, text: str) -> dict[str, list]:
+    created: list[str] = []
+    skipped: list[str] = []
+    errors: list[str] = []
+    seen: set[str] = set()
+    existing = {player["game_id"] for player in list_players(conn)}
+    for line_no, game_id_raw, remark_raw in parse_player_import_lines(text):
+        try:
+            game_id = normalize_game_id(game_id_raw)
+            remark = _note(remark_raw)
+        except AppError as exc:
+            errors.append(f"第 {line_no} 行：{exc}")
+            continue
+        if game_id in seen or game_id in existing:
+            skipped.append(game_id)
+            continue
+        create_player(conn, game_id, remark=remark)
+        seen.add(game_id)
+        created.append(game_id)
+    return {"created": created, "skipped": skipped, "errors": errors}
+
+
+def update_remark(conn: sqlite3.Connection, game_id: str, remark: str) -> None:
+    game_id = normalize_game_id(game_id)
+    remark = _note(remark)
+    updated_at = now_text()
+    with transaction(conn):
+        _require_player(conn, game_id)
+        conn.execute(
+            "UPDATE players SET remark = ?, updated_at = ? WHERE game_id = ?",
+            (remark, updated_at, game_id),
+        )
 
 
 def update_nickname(conn: sqlite3.Connection, game_id: str, nickname: str) -> None:
@@ -205,21 +258,42 @@ def delete_player(conn: sqlite3.Connection, game_id: str) -> None:
     game_id = normalize_game_id(game_id)
     with transaction(conn):
         player = _require_player(conn, game_id)
-        count = conn.execute(
-            "SELECT COUNT(*) AS n FROM ledger WHERE player_game_id = ?",
-            (game_id,),
-        ).fetchone()["n"]
-        if count or player["deposit_cents"] or player["games_played"]:
-            raise AppError("已有流水的玩家不能删除")
+        if int(player["deposit_cents"]) != 0:
+            raise AppError("押金不为 0，不能删除")
+        conn.execute("DELETE FROM ledger WHERE player_game_id = ?", (game_id,))
         conn.execute("DELETE FROM players WHERE game_id = ?", (game_id,))
 
 
 def list_players(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         """
-        SELECT game_id, nickname, deposit_cents, games_played, created_at, updated_at
+        SELECT game_id, nickname, deposit_cents, games_played, remark, created_at, updated_at
         FROM players
-        ORDER BY game_id
+        ORDER BY games_played DESC, game_id
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_session_players(conn: sqlite3.Connection) -> list[dict]:
+    """开一局用。最近一局扣过茶水的人排在最前，没扣过的排在最后。"""
+    rows = conn.execute(
+        """
+        SELECT p.game_id, p.nickname, p.deposit_cents, p.games_played, p.remark,
+               p.created_at, p.updated_at
+        FROM players p
+        LEFT JOIN (
+            SELECT player_game_id,
+                   MAX(session_id) AS last_session_id,
+                   MAX(id) AS last_ledger_id
+            FROM ledger
+            WHERE reason = 'normal_deduct'
+            GROUP BY player_game_id
+        ) recent ON recent.player_game_id = p.game_id
+        ORDER BY recent.last_session_id IS NULL,
+                 recent.last_session_id DESC,
+                 recent.last_ledger_id,
+                 p.game_id
         """
     ).fetchall()
     return [dict(row) for row in rows]
@@ -448,17 +522,30 @@ def list_ledger(conn: sqlite3.Connection, game_id: str) -> list[dict]:
     return result
 
 
-def get_default_tea_cents(conn: sqlite3.Connection) -> int:
+def get_last_tea_cents(conn: sqlite3.Connection) -> int:
     row = conn.execute(
-        "SELECT value FROM settings WHERE key = 'default_tea_cents'"
+        "SELECT value FROM settings WHERE key = 'last_tea_cents'"
     ).fetchone()
     if row is None:
-        return 0
+        return 200
     try:
         value = int(row["value"])
     except (TypeError, ValueError):
-        return 0
-    return max(value, 0)
+        return 200
+    return value if value >= 0 else 200
+
+
+def set_last_tea_cents(conn: sqlite3.Connection, tea_fee_cents: int) -> None:
+    if tea_fee_cents < 0:
+        raise AppError("茶水不能为负")
+    with transaction(conn):
+        conn.execute(
+            """
+            INSERT INTO settings (key, value) VALUES ('last_tea_cents', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (str(tea_fee_cents),),
+        )
 
 
 def set_default_tea_cents(conn: sqlite3.Connection, tea_fee_cents: int) -> None:
@@ -472,3 +559,27 @@ def set_default_tea_cents(conn: sqlite3.Connection, tea_fee_cents: int) -> None:
             """,
             (str(tea_fee_cents),),
         )
+
+
+def export_player_workbook(conn: sqlite3.Connection, path: Path) -> int:
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "玩家库"
+    sheet.append(["序号", "游戏 id", "押金", "总局数", "备注"])
+    players = list_players(conn)
+    for index, player in enumerate(players, start=1):
+        sheet.append(
+            [
+                index,
+                player["game_id"],
+                int(player["deposit_cents"]) / 100,
+                int(player["games_played"]),
+                player.get("remark") or "",
+            ]
+        )
+    for cell in sheet["C"][1:]:
+        cell.number_format = "0.00"
+    workbook.save(path)
+    return len(players)

@@ -21,10 +21,12 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -48,14 +50,20 @@ from app.services import (
     format_change,
     format_yuan,
     get_player,
+    get_last_tea_cents,
     list_ledger,
     list_players,
+    list_session_players,
     normalize_game_id,
     open_session,
     parse_yuan,
     preview_session,
     refund,
+    set_last_tea_cents,
+    export_player_workbook,
+    import_players,
     transfer,
+    update_remark,
 )
 
 COLOR_TEXT = QColor("#1E2422")
@@ -370,10 +378,13 @@ class PlayerDialog(QDialog):
         self.setWindowTitle("新增玩家")
         self.setMinimumWidth(360)
         self.game_id_edit = QLineEdit()
+        self.remark_edit = QLineEdit()
+        self.remark_edit.setPlaceholderText("可选")
         form = QFormLayout(self)
         form.setContentsMargins(22, 18, 22, 16)
         form.setSpacing(12)
         form.addRow("游戏 id", self.game_id_edit)
+        form.addRow("备注", self.remark_edit)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -385,12 +396,80 @@ class PlayerDialog(QDialog):
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
         self.game_id = ""
+        self.remark = ""
 
     def _accept(self) -> None:
         try:
             self.game_id = normalize_game_id(self.game_id_edit.text())
+            self.remark = self.remark_edit.text()
         except AppError as exc:
             QMessageBox.warning(self, "无法完成", str(exc))
+            return
+        self.accept()
+
+
+class ImportPlayersDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("批量导入玩家")
+        self.setWindowIcon(app_icon())
+        self.resize(520, 420)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 18, 22, 16)
+        layout.setSpacing(12)
+        layout.addWidget(
+            subtitle("每行一个玩家。只写游戏 id，或写成「游戏 id,备注」。已存在的游戏 id 会跳过，不会改动原来的押金。")
+        )
+        self.editor = QPlainTextEdit()
+        self.editor.setPlaceholderText("东子\n执笔,常客")
+        layout.addWidget(self.editor)
+        file_row = QHBoxLayout()
+        file_button = QPushButton("从文件读入…")
+        file_button.clicked.connect(self._load_file)
+        file_row.addWidget(file_button)
+        file_row.addStretch(1)
+        layout.addLayout(file_row)
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("warn")
+        self.error_label.setWordWrap(True)
+        layout.addWidget(self.error_label)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = QPushButton("取消")
+        confirm = QPushButton("导入")
+        set_role(confirm, "primary")
+        cancel.clicked.connect(self.reject)
+        confirm.clicked.connect(self._accept)
+        buttons.addWidget(cancel)
+        buttons.addWidget(confirm)
+        layout.addLayout(buttons)
+
+    def text(self) -> str:
+        return self.editor.toPlainText()
+
+    def _load_file(self) -> None:
+        path, _selected = QFileDialog.getOpenFileName(
+            self, "选择玩家名单", str(Path.home()), "文本 (*.txt *.csv)"
+        )
+        if not path:
+            return
+        data = Path(path).read_bytes()
+        text = ""
+        for encoding in ("utf-8-sig", "utf-8", "gbk"):
+            try:
+                text = data.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        if not text and data:
+            self.error_label.setText("无法读取这个文件，请用 UTF-8 或 GBK 保存。")
+            return
+        self.editor.setPlainText(text)
+        self.error_label.setText("")
+
+    def _accept(self) -> None:
+        if not self.editor.toPlainText().strip():
+            self.error_label.setText("请先填写要导入的玩家。")
             return
         self.accept()
 
@@ -462,12 +541,18 @@ class PlayersPage(QWidget):
         layout.addWidget(subtitle("每个玩家用游戏 id 识别。押金是还在管理员这里的余额。双击一行可查看流水。"))
         buttons = QHBoxLayout()
         add_button = QPushButton("新增玩家")
+        import_button = QPushButton("批量导入")
+        remark_button = QPushButton("修改备注")
         delete_button = QPushButton("删除")
         set_role(add_button, "primary")
         set_role(delete_button, "danger")
         add_button.clicked.connect(self.add_player)
+        import_button.clicked.connect(self.import_players)
+        remark_button.clicked.connect(self.edit_remark)
         delete_button.clicked.connect(self.remove_player)
         buttons.addWidget(add_button)
+        buttons.addWidget(import_button)
+        buttons.addWidget(remark_button)
         buttons.addWidget(delete_button)
         buttons.addStretch(1)
         card = QFrame()
@@ -483,15 +568,16 @@ class PlayersPage(QWidget):
         card_layout.addWidget(self.total_label)
         buttons.addWidget(card)
         layout.addLayout(buttons)
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["序号", "游戏 id", "押金", "总局数"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["序号", "游戏 id", "押金", "总局数", "备注"])
         configure_table(self.table)
         self.table.cellDoubleClicked.connect(self._open_selected)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table)
 
     def reload(self) -> None:
@@ -509,6 +595,7 @@ class PlayersPage(QWidget):
             self.table.setItem(row, 2, deposit)
             games = readonly_item(str(player["games_played"]), MONEY_ALIGN)
             self.table.setItem(row, 3, games)
+            self.table.setItem(row, 4, readonly_item(player.get("remark") or ""))
             if player["game_id"] == selected:
                 self.table.selectRow(row)
 
@@ -532,11 +619,45 @@ class PlayersPage(QWidget):
             return
 
         def action() -> None:
-            create_player(self.db.conn, dialog.game_id)
+            create_player(self.db.conn, dialog.game_id, remark=dialog.remark)
 
         if run_action(self, action):
             self.on_changed()
             self._select(dialog.game_id)
+
+    def import_players(self) -> None:
+        dialog = ImportPlayersDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        result = import_players(self.db.conn, dialog.text())
+        created = result["created"]
+        skipped = result["skipped"]
+        errors = result["errors"]
+        if created:
+            self.on_changed()
+        lines = [f"新导入 {len(created)} 人。"]
+        if skipped:
+            lines.append("已存在并跳过：" + "、".join(skipped))
+        if errors:
+            lines.extend(errors)
+        QMessageBox.information(self, "批量导入", "\n".join(lines))
+
+    def edit_remark(self) -> None:
+        game_id = self._require_selected()
+        if not game_id:
+            return
+        player = get_player(self.db.conn, game_id)
+        current = "" if player is None else str(player.get("remark") or "")
+        text, ok = QInputDialog.getText(self, "修改备注", "备注", text=current)
+        if not ok:
+            return
+
+        def action() -> None:
+            update_remark(self.db.conn, game_id, text)
+
+        if run_action(self, action):
+            self.on_changed()
+            self._select(game_id)
 
     def remove_player(self) -> None:
         game_id = self._require_selected()
@@ -545,7 +666,7 @@ class PlayersPage(QWidget):
         answer = QMessageBox.question(
             self,
             "删除玩家",
-            f"确定删除玩家 {game_id}？\n只有从未记过账的玩家可以删除。",
+            f"确定删除玩家 {game_id}？\n只有押金为 0 才能删除。删除后，这个玩家自己的流水也会去掉。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -582,12 +703,13 @@ class SessionPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
-        layout.addWidget(subtitle("勾选本局玩家，按茶水批量正常扣押，每人总局数加 1。余额不够也可以开局，扣完后的押金记为负数。"))
+        layout.addWidget(subtitle("勾选本局玩家，按茶水批量正常扣押，每人总局数加 1。余额不够也可以开局，扣完后的押金记为负数。最近扣过茶水的玩家排在前面。"))
         form = QHBoxLayout()
         form.addWidget(QLabel("本局茶水（元）"))
         self.tea_edit = QLineEdit()
         self.tea_edit.setMaximumWidth(140)
         self.tea_edit.textChanged.connect(self.refresh_amounts)
+        self.tea_edit.editingFinished.connect(self.save_tea)
         form.addWidget(self.tea_edit)
         form.addWidget(QLabel("备注"))
         self.note_edit = QLineEdit()
@@ -595,17 +717,14 @@ class SessionPage(QWidget):
         form.addWidget(self.note_edit, 1)
         layout.addLayout(form)
         buttons = QHBoxLayout()
-        select_all = QPushButton("全选")
-        select_none = QPushButton("全不选")
+        select_first = QPushButton("选前10个")
         self.selected_label = QLabel("已选 0 人")
         self.selected_label.setObjectName("selectedCount")
         self.confirm_button = QPushButton("确认开局")
         set_role(self.confirm_button, "primary")
-        select_all.clicked.connect(lambda: self._set_all(True))
-        select_none.clicked.connect(lambda: self._set_all(False))
+        select_first.clicked.connect(self._toggle_first)
         self.confirm_button.clicked.connect(self.confirm)
-        buttons.addWidget(select_all)
-        buttons.addWidget(select_none)
+        buttons.addWidget(select_first)
         buttons.addWidget(self.selected_label)
         buttons.addStretch(1)
         buttons.addWidget(self.confirm_button)
@@ -622,12 +741,22 @@ class SessionPage(QWidget):
         for column in (2, 3, 4, 5):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self.table)
-        self.tea_edit.setText("2.00")
+        self.load_tea()
+
+    def load_tea(self) -> None:
+        self.tea_edit.setText(format_yuan(get_last_tea_cents(self.db.conn)))
+
+    def save_tea(self) -> None:
+        try:
+            cents = parse_yuan(self.tea_edit.text())
+        except AppError:
+            return
+        set_last_tea_cents(self.db.conn, cents)
 
     def reload(self) -> None:
         selected = set() if self._reset_checks else set(self.selected_ids())
         self._reset_checks = False
-        players = list_players(self.db.conn)
+        players = list_session_players(self.db.conn)
         self.table.blockSignals(True)
         self.table.setRowCount(len(players))
         for row, player in enumerate(players):
@@ -666,13 +795,22 @@ class SessionPage(QWidget):
                 ids.append(str(box.property("game_id")))
         return ids
 
-    def _set_all(self, checked: bool) -> None:
+    def _toggle_first(self) -> None:
+        count = min(10, self.table.rowCount())
+        already = count > 0 and all(
+            (box := self._check_box(row)) is not None and box.isChecked()
+            for row in range(count)
+        ) and all(
+            (box := self._check_box(row)) is not None and not box.isChecked()
+            for row in range(count, self.table.rowCount())
+        )
         for row in range(self.table.rowCount()):
             box = self._check_box(row)
-            if box:
-                box.blockSignals(True)
-                box.setChecked(checked)
-                box.blockSignals(False)
+            if box is None:
+                continue
+            box.blockSignals(True)
+            box.setChecked((not already) and row < count)
+            box.blockSignals(False)
         self.refresh_amounts()
 
     def refresh_amounts(self) -> None:
@@ -848,15 +986,14 @@ class LedgerPage(QWidget):
             self._load_player(game_id, quiet=False)
 
     def show_player(self, game_id: str) -> None:
+        self.player_combo.blockSignals(True)
         index = self.player_combo.findData(game_id)
-        if index < 0:
+        if index >= 0:
+            self.player_combo.setCurrentIndex(index)
+        else:
             self.player_combo.setCurrentText(game_id)
-            self._load_player(game_id, quiet=False)
-            return
-        if self.player_combo.currentIndex() == index:
-            self._load_player(game_id, quiet=False)
-            return
-        self.player_combo.setCurrentIndex(index)
+        self.player_combo.blockSignals(False)
+        self._load_player(game_id, quiet=False)
 
     def query(self) -> None:
         game_id = self.player_combo.currentText().strip()
@@ -907,14 +1044,19 @@ class LedgerPage(QWidget):
         self.refund_button.setEnabled(enabled)
         self.transfer_button.setEnabled(enabled)
 
-    def _require_loaded(self) -> str | None:
+    def _target_game_id(self) -> str | None:
+        typed = self.player_combo.currentText().strip()
+        if typed and typed != "输入或选择游戏 id":
+            if typed != self._game_id:
+                self._load_player(typed, quiet=False)
+            return self._game_id or None
         if not self._game_id:
             QMessageBox.warning(self, "无法完成", "请先查询一个玩家")
             return None
         return self._game_id
 
     def add_money(self) -> None:
-        game_id = self._require_loaded()
+        game_id = self._target_game_id()
         if not game_id:
             return
         dialog = AmountDialog(self, "加押金")
@@ -928,7 +1070,7 @@ class LedgerPage(QWidget):
             self.on_changed()
 
     def refund_money(self) -> None:
-        game_id = self._require_loaded()
+        game_id = self._target_game_id()
         if not game_id:
             return
         dialog = AmountDialog(self, "退押金")
@@ -942,7 +1084,7 @@ class LedgerPage(QWidget):
             self.on_changed()
 
     def transfer_money(self) -> None:
-        game_id = self._require_loaded()
+        game_id = self._target_game_id()
         if not game_id:
             return
         targets = [player for player in list_players(self.db.conn) if player["game_id"] != game_id]
@@ -994,6 +1136,18 @@ class HandoverPage(QWidget):
         buttons.addStretch(1)
         file_layout.addLayout(buttons)
         layout.addWidget(file_box)
+        player_box = QGroupBox("导出玩家库")
+        player_layout = QVBoxLayout(player_box)
+        hint = QLabel("导出当前玩家名单，包含游戏 id、押金、总局数和备注。这是一份给查看用的表格，不能代替上面的账本交接。")
+        hint.setWordWrap(True)
+        player_layout.addWidget(hint)
+        player_buttons = QHBoxLayout()
+        export_players_button = QPushButton("导出玩家库…")
+        export_players_button.clicked.connect(self.export_players)
+        player_buttons.addWidget(export_players_button)
+        player_buttons.addStretch(1)
+        player_layout.addLayout(player_buttons)
+        layout.addWidget(player_box)
         self.result = QLabel("")
         self.result.setObjectName("result")
         self.result.setWordWrap(True)
@@ -1001,6 +1155,24 @@ class HandoverPage(QWidget):
         self.result.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.result)
         layout.addStretch(1)
+
+    def export_players(self) -> None:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        default = str(Path.home() / f"玩家库-{stamp}.xlsx")
+        path, _selected = QFileDialog.getSaveFileName(self, "导出玩家库", default, "Excel (*.xlsx)")
+        if not path:
+            return
+        dest = Path(path)
+        if dest.suffix.lower() != ".xlsx":
+            dest = dest.with_name(dest.name + ".xlsx")
+
+        def action() -> None:
+            export_player_workbook(self.db.conn, dest)
+
+        if not run_action(self, action):
+            return
+        self.result.setText(f"已导出玩家库：{dest}")
+        QMessageBox.information(self, "导出完成", f"玩家库已导出到：\n{dest}")
 
     def reload(self) -> None:
         return
@@ -1213,5 +1385,6 @@ class MainWindow(QMainWindow):
         if self._license is not None:
             self._license.logout()
             self._license = None
+        self.session_page.save_tea()
         self.db.close()
         super().closeEvent(event)

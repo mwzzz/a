@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
+import stat
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +20,8 @@ SCHEMA = (
         deposit_cents INTEGER NOT NULL DEFAULT 0,
         games_played INTEGER NOT NULL DEFAULT 0 CHECK (games_played >= 0),
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        remark TEXT NOT NULL DEFAULT ''
     )
     """,
     """
@@ -85,6 +88,23 @@ def default_db_path() -> Path:
     return install_dir() / "data" / "deposit.db"
 
 
+def ensure_writable(path: Path) -> None:
+    """去掉只读属性。别人发来的账本常带这个属性，复制后程序就写不进去。"""
+    if not path.is_file():
+        return
+    try:
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    except OSError:
+        return
+
+
+def _replace_ledger_file(src: Path, dest: Path) -> None:
+    """只复制账本内容。先去掉目标文件的只读，避免盖不上去，也不把来源的只读带过来。"""
+    ensure_writable(dest)
+    shutil.copyfile(src, dest)
+    ensure_writable(dest)
+
+
 def _remove_sidecars(path: Path) -> None:
     for suffix in ("-wal", "-shm"):
         sidecar = Path(str(path) + suffix)
@@ -123,9 +143,17 @@ class Database:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_writable(self.path)
         self.conn: sqlite3.Connection | None = None
-        self._connect()
-        self._init_schema()
+        try:
+            self._connect()
+            self._init_schema()
+        except sqlite3.OperationalError as exc:
+            if "readonly" in str(exc).lower():
+                raise AppError(
+                    f"账本无法写入：\n{self.path}\n请把程序解压到可以保存文件的文件夹后再打开。"
+                ) from exc
+            raise
 
     def _connect(self) -> None:
         self.conn = sqlite3.connect(self.path, isolation_level=None)
@@ -138,12 +166,19 @@ class Database:
         assert self.conn is not None
         for statement in SCHEMA:
             self.conn.execute(statement)
+        self._ensure_player_remark()
         self._relax_nonnegative_checks()
         for statement in SCHEMA[-2:]:
             self.conn.execute(statement)
         self.conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('default_tea_cents', '0')"
         )
+
+    def _ensure_player_remark(self) -> None:
+        assert self.conn is not None
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(players)")}
+        if "remark" not in columns:
+            self.conn.execute("ALTER TABLE players ADD COLUMN remark TEXT NOT NULL DEFAULT ''")
 
     def _table_sql(self, name: str) -> str:
         assert self.conn is not None
@@ -171,9 +206,9 @@ class Database:
                 self.conn.execute(
                     """
                     INSERT INTO players (
-                        game_id, nickname, deposit_cents, games_played, created_at, updated_at
+                        game_id, nickname, deposit_cents, games_played, created_at, updated_at, remark
                     )
-                    SELECT game_id, nickname, deposit_cents, games_played, created_at, updated_at
+                    SELECT game_id, nickname, deposit_cents, games_played, created_at, updated_at, remark
                     FROM players_old
                     """
                 )
@@ -246,11 +281,11 @@ class Database:
         self.close()
         _remove_sidecars(self.path)
         try:
-            shutil.copy2(src, self.path)
+            _replace_ledger_file(src, self.path)
             _remove_sidecars(self.path)
             validate_ledger_file(self.path)
         except Exception as exc:
-            shutil.copy2(backup_path, self.path)
+            _replace_ledger_file(backup_path, self.path)
             _remove_sidecars(self.path)
             self._connect()
             self._init_schema()

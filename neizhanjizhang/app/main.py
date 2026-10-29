@@ -20,6 +20,7 @@ from app.license_client import (
     login,
     save_config,
 )
+from app.services import AppError
 from app.ui import LoginDialog, MainWindow, app_icon, app_stylesheet
 
 
@@ -70,7 +71,13 @@ def main() -> int:
         save_config(config)
         session = LicenseSession(server_url, card, config.machine_id, result.expires_at)
 
-    database = Database(default_db_path())
+    try:
+        database = Database(default_db_path())
+    except AppError as exc:
+        session.logout()
+        QMessageBox.warning(None, "押金记账", str(exc))
+        lock.unlock()
+        return 1
     window = MainWindow(database)
     window.lock = lock
     window.resize(1100, 720)
