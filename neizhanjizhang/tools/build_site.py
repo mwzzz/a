@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import zipfile
 from datetime import datetime
@@ -30,6 +31,26 @@ def sha256_of(path: Path, chunk: int = 1 << 20) -> str:
         for block in iter(lambda: fh.read(chunk), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def update_page_fallbacks(manifest: dict) -> None:
+    """页面里写死的版本、大小和下载地址同步成清单里的值；脚本读不到清单时显示的也是新包。
+    样式和脚本地址带上时间戳，浏览器不会用旧缓存。"""
+    page = SITE / "index.html"
+    html = page.read_text(encoding="utf-8")
+    size = f"{manifest['size_bytes'] / 1024 / 1024:.1f} MB"
+    replacements = [
+        (r"downloads/yajinjizhang-\d{8}\.zip", f"downloads/{manifest['file']}"),
+        (r'(id="(?:hero-version|dl-version|new-version)">)[^<]*', rf"\g<1>{manifest['version']}"),
+        (r'(id="dl-built">)[^<]*', rf"\g<1>{manifest['built_at']}"),
+        (r'(id="(?:dl-size|dl-size-2)">)[^<]*', rf"\g<1>{size}"),
+        (r'(id="hero-files">)[^<]*', rf"\g<1>{manifest['file_count']}"),
+        (r'(id="dl-files">)[^<]*', rf"\g<1>{manifest['file_count']} 个"),
+        (r"(assets/(?:style\.css|site\.js))\?v=\d+", rf"\g<1>?v={datetime.now():%Y%m%d%H%M}"),
+    ]
+    for pattern, replacement in replacements:
+        html = re.sub(pattern, replacement, html)
+    page.write_text(html, encoding="utf-8")
 
 
 def main() -> int:
@@ -72,6 +93,7 @@ def main() -> int:
     (DOWNLOADS / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    update_page_fallbacks(manifest)
 
     size_mb = manifest["size_bytes"] / 1024 / 1024
     print(f"安装包已就位：{target.relative_to(ROOT)}（{size_mb:.1f} MB，{len(names)} 个文件）")
