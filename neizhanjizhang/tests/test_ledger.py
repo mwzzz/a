@@ -133,17 +133,47 @@ def test_transfer_creates_pair(db):
     assert outgoing["note"] == "换人"
 
 
-def test_transfer_rejects_self_and_insufficient_balance(db):
+def test_transfer_rejects_self_but_may_go_negative(db):
     create_player(db.conn, "a", "")
     create_player(db.conn, "b", "")
     add_deposit(db.conn, "a", 100)
     with pytest.raises(AppError, match="不能划给自己"):
         transfer(db.conn, "a", "a", 50)
-    with pytest.raises(AppError, match="押金不足"):
-        transfer(db.conn, "a", "b", 101)
-    assert get_player(db.conn, "a")["deposit_cents"] == 100
-    assert get_player(db.conn, "b")["deposit_cents"] == 0
     assert list_ledger(db.conn, "b") == []
+
+    transfer(db.conn, "a", "b", 300)
+    assert get_player(db.conn, "a")["deposit_cents"] == -200
+    assert get_player(db.conn, "b")["deposit_cents"] == 300
+    outgoing = list_ledger(db.conn, "a")[0]
+    assert outgoing["balance_before_cents"] == 100
+    assert outgoing["balance_after_cents"] == -200
+
+    with pytest.raises(AppError, match="押金不足"):
+        refund(db.conn, "a", 1)
+    assert get_player(db.conn, "a")["deposit_cents"] == -200
+
+
+def test_deposit_level_and_player_search():
+    from app.services import deposit_level, find_player_rows
+
+    assert deposit_level(-100) == "low"
+    assert deposit_level(2999) == "low"
+    assert deposit_level(3000) == "warn"
+    assert deposit_level(6000) == "warn"
+    assert deposit_level(6001) == "safe"
+    assert deposit_level(10000) == "safe"
+
+    players = [
+        {"game_id": "东子2", "remark": ""},
+        {"game_id": "阿东", "remark": "晚上"},
+        {"game_id": "东子", "remark": ""},
+        {"game_id": "Uzi", "remark": "东区"},
+    ]
+    assert find_player_rows(players, "东子") == [2, 0]
+    assert find_player_rows(players, " uzi ") == [3]
+    assert find_player_rows(players, "东") == [0, 1, 2, 3]
+    assert find_player_rows(players, "晚上") == [1]
+    assert find_player_rows(players, "") == []
 
 
 def test_open_session_records_negative_deposit(db):

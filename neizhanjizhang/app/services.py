@@ -275,6 +275,32 @@ def list_players(conn: sqlite3.Connection) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def deposit_level(deposit_cents: int) -> str:
+    """押金提醒档位：低于 30 元 low，30 到 60 元 warn，60 元以上 safe。"""
+    if deposit_cents < 3000:
+        return "low"
+    if deposit_cents <= 6000:
+        return "warn"
+    return "safe"
+
+
+def find_player_rows(players: list[dict], keyword: str) -> list[int]:
+    """按游戏 id 或备注模糊查找，返回所在行号。游戏 id 完全一致的排在最前。"""
+    keyword = keyword.strip().casefold()
+    if not keyword:
+        return []
+    exact: list[int] = []
+    partial: list[int] = []
+    for index, player in enumerate(players):
+        game_id = str(player["game_id"]).casefold()
+        remark = str(player.get("remark") or "").casefold()
+        if game_id == keyword:
+            exact.append(index)
+        elif keyword in game_id or keyword in remark:
+            partial.append(index)
+    return exact + partial
+
+
 def list_session_players(conn: sqlite3.Connection) -> list[dict]:
     """开一局用。最近一局扣过茶水的人排在最前，没扣过的排在最后。"""
     rows = conn.execute(
@@ -382,8 +408,6 @@ def transfer(
         source = _require_player(conn, from_game_id)
         target = _require_player(conn, to_game_id)
         source_before = int(source["deposit_cents"])
-        if source_before < amount_cents:
-            raise AppError("押金不足，不能划出这么多")
         source_after = source_before - amount_cents
         target_before = int(target["deposit_cents"])
         target_after = target_before + amount_cents

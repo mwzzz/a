@@ -47,6 +47,8 @@ from app.services import (
     add_deposit,
     create_player,
     delete_player,
+    deposit_level,
+    find_player_rows,
     format_change,
     format_yuan,
     get_player,
@@ -69,6 +71,14 @@ from app.services import (
 COLOR_TEXT = QColor("#1E2422")
 COLOR_OK = QColor("#1F6B4A")
 COLOR_BAD = QColor("#9C3B32")
+COLOR_DEPOSIT_LOW = QColor("#E02424")
+COLOR_DEPOSIT_WARN = QColor("#C98A00")
+COLOR_DEPOSIT_SAFE = QColor("#1E8C4E")
+DEPOSIT_STYLE = {
+    "low": (COLOR_DEPOSIT_LOW, "押金低于 30 元，请及时补押金"),
+    "warn": (COLOR_DEPOSIT_WARN, "押金在 30 到 60 元之间"),
+    "safe": (COLOR_DEPOSIT_SAFE, "押金 60 元以上"),
+}
 MONEY_ALIGN = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
 TEXT_ALIGN = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
 
@@ -289,6 +299,14 @@ def app_stylesheet() -> str:
         border-color: #14352C;
         image: url("{check_icon}");
     }}
+    QCheckBox#pickCheck::indicator {{
+        width: 22px;
+        height: 22px;
+        border-radius: 5px;
+    }}
+    QCheckBox#pickCheck::indicator:hover {{
+        border-color: #14352C;
+    }}
     QGroupBox {{
         background: #FFFCF6;
         border: 1px solid #E3D9C8;
@@ -474,8 +492,35 @@ class ImportPlayersDialog(QDialog):
         self.accept()
 
 
+class CheckCell(QWidget):
+    """开一局的选择格。点格子里任何位置都能勾选，不必正好点中小方框。"""
+
+    def __init__(self, check: QCheckBox):
+        super().__init__()
+        self.check = check
+        self.setStyleSheet("background: transparent;")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(check)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.check.toggle()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
 class AmountDialog(QDialog):
-    def __init__(self, parent: QWidget, title: str, targets: list[dict] | None = None):
+    def __init__(
+        self,
+        parent: QWidget,
+        title: str,
+        targets: list[dict] | None = None,
+        default_cents: int = 0,
+    ):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setMinimumWidth(380)
@@ -493,6 +538,9 @@ class AmountDialog(QDialog):
             form.addRow("对方", self.target_combo)
         self.amount_edit = QLineEdit()
         self.amount_edit.setPlaceholderText("0.00")
+        if default_cents > 0:
+            self.amount_edit.setText(format_yuan(default_cents))
+            self.amount_edit.selectAll()
         self.note_edit = QLineEdit()
         self.note_edit.setPlaceholderText("可选")
         form.addRow("金额（元）", self.amount_edit)
@@ -538,7 +586,12 @@ class PlayersPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
-        layout.addWidget(subtitle("每个玩家用游戏 id 识别。押金是还在管理员这里的余额。双击一行可查看流水。"))
+        layout.addWidget(
+            subtitle(
+                "每个玩家用游戏 id 识别。押金是还在管理员这里的余额。双击一行可查看流水。"
+                "押金颜色：红色低于 30 元需及时补押金，黄色 30 到 60 元，绿色 60 元以上。"
+            )
+        )
         buttons = QHBoxLayout()
         add_button = QPushButton("新增玩家")
         import_button = QPushButton("批量导入")
@@ -554,7 +607,21 @@ class PlayersPage(QWidget):
         buttons.addWidget(import_button)
         buttons.addWidget(remark_button)
         buttons.addWidget(delete_button)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("搜索游戏 id 或备注，回车找下一个")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.setMinimumWidth(220)
+        self.search_edit.textChanged.connect(lambda _text: self._search(restart=True))
+        self.search_edit.returnPressed.connect(lambda: self._search(restart=False))
+        self.search_hint = QLabel("")
+        self.search_hint.setObjectName("appHint")
+        buttons.addSpacing(12)
+        buttons.addWidget(self.search_edit)
+        buttons.addWidget(self.search_hint)
         buttons.addStretch(1)
+        self._players: list[dict] = []
+        self._search_hits: list[int] = []
+        self._search_pos = -1
         card = QFrame()
         card.setObjectName("totalCard")
         card_layout = QVBoxLayout(card)
@@ -583,6 +650,9 @@ class PlayersPage(QWidget):
     def reload(self) -> None:
         selected = self.selected_game_id()
         players = list_players(self.db.conn)
+        self._players = players
+        self._search_hits = []
+        self._search_pos = -1
         total_cents = sum(int(player["deposit_cents"]) for player in players)
         self.total_label.setText(f"{format_yuan(total_cents)} 元")
         self.table.setRowCount(len(players))
@@ -590,8 +660,14 @@ class PlayersPage(QWidget):
             self.table.setItem(row, 0, readonly_item(str(row + 1), MONEY_ALIGN))
             self.table.setItem(row, 1, readonly_item(player["game_id"]))
             deposit = readonly_item(format_yuan(player["deposit_cents"]), MONEY_ALIGN)
-            if int(player["deposit_cents"]) < 0:
-                deposit.setForeground(QBrush(COLOR_BAD))
+            style = DEPOSIT_STYLE.get(deposit_level(int(player["deposit_cents"])))
+            if style is not None:
+                color, tip = style
+                deposit.setForeground(QBrush(color))
+                font = deposit.font()
+                font.setBold(True)
+                deposit.setFont(font)
+                deposit.setToolTip(tip)
             self.table.setItem(row, 2, deposit)
             games = readonly_item(str(player["games_played"]), MONEY_ALIGN)
             self.table.setItem(row, 3, games)
@@ -686,6 +762,25 @@ class PlayersPage(QWidget):
                 self.table.selectRow(row)
                 return
 
+    def _search(self, restart: bool) -> None:
+        keyword = self.search_edit.text()
+        if restart or not self._search_hits:
+            self._search_hits = find_player_rows(self._players, keyword)
+            self._search_pos = -1
+        if not keyword.strip():
+            self.search_hint.setText("")
+            return
+        if not self._search_hits:
+            self.search_hint.setText("没找到")
+            return
+        self._search_pos = (self._search_pos + 1) % len(self._search_hits)
+        row = self._search_hits[self._search_pos]
+        self.table.selectRow(row)
+        item = self.table.item(row, 1)
+        if item is not None:
+            self.table.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+        self.search_hint.setText(f"{self._search_pos + 1}/{len(self._search_hits)}")
+
     def _open_selected(self, row: int, _column: int) -> None:
         item = self.table.item(row, 1)
         if item:
@@ -703,7 +798,7 @@ class SessionPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
-        layout.addWidget(subtitle("勾选本局玩家，按茶水批量正常扣押，每人总局数加 1。余额不够也可以开局，扣完后的押金记为负数。最近扣过茶水的玩家排在前面。"))
+        layout.addWidget(subtitle("勾选本局玩家，按茶水批量正常扣押，每人总局数加 1。余额不够也可以开局，扣完后的押金记为负数。最近扣过茶水的玩家排在前面。点一行任意位置即可勾选或取消。"))
         form = QHBoxLayout()
         form.addWidget(QLabel("本局茶水（元）"))
         self.tea_edit = QLineEdit()
@@ -736,7 +831,8 @@ class SessionPage(QWidget):
         configure_table(self.table)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(0, 72)
+        self.table.setColumnWidth(0, 80)
+        self.table.cellClicked.connect(self._toggle_row)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         for column in (2, 3, 4, 5):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
@@ -760,17 +856,13 @@ class SessionPage(QWidget):
         self.table.blockSignals(True)
         self.table.setRowCount(len(players))
         for row, player in enumerate(players):
-            holder = QWidget()
-            holder.setStyleSheet("background: transparent;")
-            holder_layout = QHBoxLayout(holder)
-            holder_layout.setContentsMargins(0, 0, 0, 0)
-            holder_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             check = QCheckBox()
+            check.setObjectName("pickCheck")
+            check.setCursor(Qt.CursorShape.PointingHandCursor)
             check.setProperty("game_id", player["game_id"])
             check.setChecked(player["game_id"] in selected)
             check.toggled.connect(self.refresh_amounts)
-            holder_layout.addWidget(check)
-            self.table.setCellWidget(row, 0, holder)
+            self.table.setCellWidget(row, 0, CheckCell(check))
             self.table.setItem(row, 1, readonly_item(player["game_id"]))
             deposit = readonly_item(format_yuan(player["deposit_cents"]), MONEY_ALIGN)
             deposit.setData(Qt.ItemDataRole.UserRole, int(player["deposit_cents"]))
@@ -794,6 +886,13 @@ class SessionPage(QWidget):
             if box and box.isChecked():
                 ids.append(str(box.property("game_id")))
         return ids
+
+    def _toggle_row(self, row: int, column: int) -> None:
+        if column == 0:
+            return
+        box = self._check_box(row)
+        if box is not None:
+            box.toggle()
 
     def _toggle_first(self) -> None:
         count = min(10, self.table.rowCount())
@@ -1073,7 +1172,9 @@ class LedgerPage(QWidget):
         game_id = self._target_game_id()
         if not game_id:
             return
-        dialog = AmountDialog(self, "退押金")
+        player = get_player(self.db.conn, game_id)
+        balance = 0 if player is None else int(player["deposit_cents"])
+        dialog = AmountDialog(self, "退押金", default_cents=balance)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -1091,9 +1192,26 @@ class LedgerPage(QWidget):
         if not targets:
             QMessageBox.warning(self, "无法完成", "没有其他玩家可以划入")
             return
-        dialog = AmountDialog(self, "划给其他人押金", targets)
+        dialog = AmountDialog(
+            self,
+            "划给其他人押金",
+            targets,
+            default_cents=get_last_tea_cents(self.db.conn) * 10,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+        source = get_player(self.db.conn, game_id)
+        after = (0 if source is None else int(source["deposit_cents"])) - dialog.cents
+        if after < 0:
+            answer = QMessageBox.question(
+                self,
+                "押金将为负数",
+                f"划出 {format_yuan(dialog.cents)} 元后，{game_id} 的押金为 {format_yuan(after)} 元。确定划出？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
 
         def action() -> None:
             transfer(self.db.conn, game_id, dialog.target_id, dialog.cents, dialog.note_text)
