@@ -1,0 +1,8 @@
+[Unit]
+Description=Backup LOL ledger database
+
+[Service]
+Type=oneshot
+User=lol
+Group=lol
+ExecStart=/opt/lol-ledger/deploy/backup.sh

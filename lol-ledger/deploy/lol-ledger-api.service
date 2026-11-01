@@ -1,0 +1,30 @@
+[Unit]
+Description=LOL Ledger API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lol
+Group=lol
+WorkingDirectory=/opt/lol-ledger/backend
+EnvironmentFile=/opt/lol-ledger/.env
+ExecStart=/opt/lol-ledger/venv/bin/uvicorn app.main:app \
+    --host 127.0.0.1 --port 8010 --workers 1 \
+    --proxy-headers --forwarded-allow-ips=127.0.0.1 \
+    --no-access-log
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+KillSignal=SIGTERM
+
+# 加固：只允许写 data 目录
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/opt/lol-ledger/data
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
