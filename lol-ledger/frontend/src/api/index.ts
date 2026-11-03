@@ -1,18 +1,24 @@
 import { http } from './http'
 import type {
   AccountRow,
+  AiRecognizePayload,
+  AiStatus,
   AuthUser,
   BatchRow,
   BatchSummary,
+  CustodyInfo,
   LedgerEntryRow,
   OverviewPayload,
   Paged,
+  PlatformMerchantRow,
+  PlayerImportResult,
   PlayerOption,
   PlayerRow,
   PreviewPayload,
   ReconcilePayload,
   SessionRow,
   SettingsPayload,
+  UserOption,
 } from './types'
 
 type Query = Record<string, string | number | boolean | undefined | null>
@@ -40,6 +46,13 @@ export const playerApi = {
   update: (id: number, payload: Record<string, unknown>) =>
     http.patch(`/players/${id}`, payload).then((res) => res.data as PlayerRow),
   remove: (id: number) => http.delete(`/players/${id}`),
+  importFile: (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return http
+      .post('/players/import', form)
+      .then((res) => res.data as PlayerImportResult)
+  },
 }
 
 export const moneyApi = {
@@ -51,10 +64,6 @@ export const moneyApi = {
     http
       .post(`/players/${id}/refunds`, { amount_cents, note })
       .then((res) => res.data as { entry: LedgerEntryRow; player: PlayerRow }),
-  deduct: (id: number, amount_cents: number, note = '') =>
-    http
-      .post(`/players/${id}/deductions`, { amount_cents, note })
-      .then((res) => res.data as { entry: LedgerEntryRow; player: PlayerRow }),
   transfer: (from_player_id: number, to_player_id: number, amount_cents: number, note = '') =>
     http.post('/transfers', { from_player_id, to_player_id, amount_cents, note }).then((res) => res.data),
 }
@@ -62,14 +71,17 @@ export const moneyApi = {
 export const batchApi = {
   list: (params: Query) => http.get('/batches', { params }).then((res) => res.data as Paged<BatchRow>),
   current: () =>
-    http.get('/batches/current').then((res) => res.data as { batch: BatchRow | null }),
+    http
+      .get('/batches/current')
+      .then((res) => res.data as { batch: BatchRow | null; custody: CustodyInfo }),
   create: (payload: { label?: string; note?: string }) =>
     http.post('/batches', payload).then((res) => res.data as BatchRow),
-  get: (id: number) => http.get(`/batches/${id}`).then((res) => res.data as BatchRow),
+  get: (id: number) =>
+    http.get(`/batches/${id}`).then((res) => res.data as BatchRow & { custody: CustodyInfo }),
   summary: (id: number) =>
     http.get(`/batches/${id}/summary`).then((res) => res.data as BatchSummary),
-  close: (id: number, note = '') =>
-    http.post(`/batches/${id}/close`, { note }).then((res) => res.data as BatchSummary),
+  close: (id: number, payload: Record<string, unknown>) =>
+    http.post(`/batches/${id}/close`, payload).then((res) => res.data as BatchSummary),
   ledger: (id: number, params: Query) =>
     http.get(`/batches/${id}/ledger`, { params }).then((res) => res.data as Paged<LedgerEntryRow>),
 }
@@ -118,6 +130,7 @@ export const settingsApi = {
 
 export const accountApi = {
   list: () => http.get('/users').then((res) => res.data as AccountRow[]),
+  options: () => http.get('/users/options').then((res) => res.data as UserOption[]),
   create: (payload: Record<string, unknown>) =>
     http.post('/users', payload).then((res) => res.data as AccountRow),
   update: (id: number, payload: Record<string, unknown>) =>
@@ -126,6 +139,36 @@ export const accountApi = {
     http.post(`/users/${id}/password`, { new_password }),
 }
 
+export const platformApi = {
+  merchants: () =>
+    http.get('/platform/merchants').then((res) => res.data as PlatformMerchantRow[]),
+  createMerchant: (payload: Record<string, unknown>) =>
+    http
+      .post('/platform/merchants', payload)
+      .then((res) => res.data as { merchant: PlatformMerchantRow; admin: AccountRow | null }),
+  updateMerchant: (id: number, payload: Record<string, unknown>) =>
+    http.patch(`/platform/merchants/${id}`, payload).then((res) => res.data as PlatformMerchantRow),
+  users: (merchantId: number) =>
+    http
+      .get(`/platform/merchants/${merchantId}/users`)
+      .then((res) => res.data as AccountRow[]),
+  createUser: (merchantId: number, payload: Record<string, unknown>) =>
+    http
+      .post(`/platform/merchants/${merchantId}/users`, payload)
+      .then((res) => res.data as AccountRow),
+  updateUser: (id: number, payload: Record<string, unknown>) =>
+    http.patch(`/platform/users/${id}`, payload).then((res) => res.data as AccountRow),
+  resetPassword: (id: number, new_password: string) =>
+    http.post(`/platform/users/${id}/password`, { new_password }),
+}
+
 export const aiApi = {
-  recognize: () => http.post('/ai/recognize-players'),
+  status: () => http.get('/ai/status').then((res) => res.data as AiStatus),
+  recognize: (file: File, signal?: AbortSignal) => {
+    const form = new FormData()
+    form.append('file', file)
+    return http
+      .post('/ai/recognize-players', form, { signal })
+      .then((res) => res.data as AiRecognizePayload)
+  },
 }

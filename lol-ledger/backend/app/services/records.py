@@ -12,7 +12,13 @@ from sqlalchemy.orm import Session, aliased
 from app.errors import AppError, NotFoundError
 from app.models import Batch, GameSession, LedgerEntry, Player, User
 from app.serializers import entry_payload, entry_row, session_row
-from app.services.batches import compute_summary, get_batch, snapshot_summary
+from app.services import options
+from app.services.batches import (
+    compute_summary,
+    get_batch,
+    operator_stats,
+    snapshot_summary,
+)
 from app.services.players import get_player
 from app.services.sessions import list_sessions
 from app.timeutil import day_after_text, day_start_text
@@ -206,9 +212,25 @@ def export_batch_csv(session: Session, batch_id: int, merchant_id: int) -> str:
         writer.writerow(["茶水合计（元）", f"{summary['tea_total_cents'] / 100:.2f}"])
         writer.writerow(["加押金（元）", f"{summary['add_total_cents'] / 100:.2f}"])
         writer.writerow(["退押金（元）", f"{summary['refund_total_cents'] / 100:.2f}"])
-        writer.writerow(["手动扣押（元）", f"{summary['deduct_total_cents'] / 100:.2f}"])
         writer.writerow(["划转（元）", f"{summary['transfer_out_total_cents'] / 100:.2f}"])
         writer.writerow(["期末总押金（元）", f"{summary['deposit_total_cents'] / 100:.2f}"])
+    rate = (
+        int(batch.dividend_rate_percent or 50)
+        if batch.status == "closed"
+        else options.dividend_rate(session, merchant_id)
+    )
+    writer.writerow([])
+    writer.writerow(["操作人", "局数", "人次", "茶水（元）", f"分红（{rate}%）"])
+    for row in operator_stats(session, batch_id, merchant_id, rate):
+        writer.writerow(
+            [
+                (row["user"] or {}).get("display_name", ""),
+                row["session_count"],
+                row["player_times"],
+                f"{row['tea_cents'] / 100:.2f}",
+                f"{row['dividend_cents'] / 100:.2f}",
+            ]
+        )
     writer.writerow([])
     writer.writerow(["时间", "玩家", "原因", "变动金额", "变动后余额", "操作人", "场次", "备注"])
 

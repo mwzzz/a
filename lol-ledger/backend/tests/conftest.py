@@ -13,6 +13,7 @@ os.environ["DEBUG"] = "false"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import select  # noqa: E402
 
 from app import db as dbmod  # noqa: E402
 from app.main import app  # noqa: E402
@@ -96,6 +97,8 @@ def create_user_direct(
         )
         session.add(user)
         session.flush()
+        if role == "admin" and merchant.custodian_user_id is None:
+            merchant.custodian_user_id = user.id
         user_id = user.id
     token, _ = create_access_token(user_id, role, password_hash)
     return {
@@ -108,6 +111,89 @@ def create_user_direct(
         "token": token,
         "headers": {"Authorization": f"Bearer {token}"},
     }
+
+
+def current_user_id(client, headers) -> int:
+    return int(client.get("/api/v1/auth/me", headers=headers).json()["id"])
+
+
+def close_batch(
+    client,
+    batch_id: int,
+    headers,
+    *,
+    tea_to_id: int | None = None,
+    deposit_to_id: int | None = None,
+    tea_method: str = "wechat",
+    deposit_method: str = "wechat",
+    note: str = "",
+):
+    """默认茶水与押金都交给当前操作人，方便老测试继续跑。"""
+    uid = current_user_id(client, headers)
+    return client.post(
+        f"/api/v1/batches/{batch_id}/close",
+        json={
+            "tea_to_user_id": tea_to_id or uid,
+            "deposit_to_user_id": deposit_to_id or uid,
+            "tea_method": tea_method,
+            "deposit_method": deposit_method,
+            "note": note,
+        },
+        headers=headers,
+    )
+
+
+def create_superadmin_direct(
+    username: str = "root",
+    password: str = DEFAULT_PASSWORD,
+    display_name: str = "开发者",
+) -> dict:
+    """开发者账号挂在平台商家下，不经过登录接口。"""
+    with dbmod.write_session() as session:
+        merchant = session.scalar(select(Merchant).where(Merchant.is_system.is_(True)))
+        if merchant is None:
+            raise RuntimeError("平台商家不存在")
+        stamp = now_text()
+        password_hash = hash_password(password)
+        user = User(
+            merchant_id=merchant.id,
+            username=username,
+            password_hash=password_hash,
+            display_name=display_name,
+            role="admin",
+            is_active=True,
+            is_superadmin=True,
+            password_changed_at=stamp,
+            last_login_at=None,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+        session.add(user)
+        session.flush()
+        user_id = user.id
+        merchant_id = merchant.id
+        merchant_name = merchant.name
+    token, _ = create_access_token(user_id, "admin", password_hash)
+    return {
+        "id": user_id,
+        "username": username,
+        "password": password,
+        "role": "admin",
+        "merchant_id": merchant_id,
+        "merchant_name": merchant_name,
+        "token": token,
+        "headers": {"Authorization": f"Bearer {token}"},
+    }
+
+
+@pytest.fixture()
+def superadmin(database) -> dict:
+    return create_superadmin_direct()
+
+
+@pytest.fixture()
+def superadmin_headers(superadmin) -> dict:
+    return superadmin["headers"]
 
 
 @pytest.fixture()

@@ -9,7 +9,7 @@
 
     <div v-loading="loading" class="cards">
       <StatCard
-        label="总押金"
+        label="玩家押金余额"
         :value="'¥' + formatCents(data?.total_deposit_cents || 0)"
         :hint="`${data?.player_count || 0} 个在用玩家`"
       />
@@ -20,30 +20,37 @@
         :hint="`低于 ¥${formatCents(data?.deposit_low_cents || 3000)} 需要催补`"
       />
       <StatCard
-        label="今日茶水"
-        :value="'¥' + formatCents(data?.today.tea_total_cents || 0)"
+        label="本班茶水"
+        :value="'¥' + formatCents(data?.open_batch?.summary.tea_total_cents || 0)"
         tone="good"
-        :hint="`${data?.today.session_count || 0} 局 · ${data?.today.player_times || 0} 人次`"
+        :hint="`${data?.open_batch?.summary.session_count || 0} 局 · ${data?.open_batch?.summary.player_times || 0} 人次`"
       />
       <StatCard
-        label="今日加押金"
-        :value="'¥' + formatCents(data?.today.add_total_cents || 0)"
-        :hint="`退押金 ¥${formatCents(data?.today.refund_total_cents || 0)}`"
+        label="本班收押金"
+        :value="'¥' + formatCents(data?.open_batch?.summary.add_total_cents || 0)"
+        :hint="`退押金 ¥${formatCents(data?.open_batch?.summary.refund_total_cents || 0)}`"
+      />
+      <StatCard
+        label="在库现金"
+        :value="'¥' + formatCents(data?.custody.amount_cents || 0)"
+        :hint="`保管人：${data?.custody.holder?.display_name || '未设置'}`"
       />
     </div>
 
     <div class="two-col">
       <div class="panel block">
-        <div class="section-title">今日流水</div>
+        <div class="section-title">本班流水</div>
         <div class="mini-grid">
-          <div class="mini"><span>局数</span><b>{{ data?.today.session_count || 0 }}</b></div>
-          <div class="mini"><span>人次</span><b>{{ data?.today.player_times || 0 }}</b></div>
-          <div class="mini"><span>茶水</span><b>¥{{ formatCents(data?.today.tea_total_cents || 0) }}</b></div>
-          <div class="mini"><span>加押金</span><b>¥{{ formatCents(data?.today.add_total_cents || 0) }}</b></div>
-          <div class="mini"><span>退押金</span><b>¥{{ formatCents(data?.today.refund_total_cents || 0) }}</b></div>
-          <div class="mini"><span>手动扣押</span><b>¥{{ formatCents(data?.today.deduct_total_cents || 0) }}</b></div>
-          <div class="mini"><span>划转笔数</span><b>{{ data?.today.transfer_count || 0 }}</b></div>
-          <div class="mini"><span>划转金额</span><b>¥{{ formatCents(data?.today.transfer_total_cents || 0) }}</b></div>
+          <div class="mini"><span>局数</span><b>{{ data?.open_batch?.summary.session_count || 0 }}</b></div>
+          <div class="mini"><span>人次</span><b>{{ data?.open_batch?.summary.player_times || 0 }}</b></div>
+          <div class="mini"><span>茶水</span><b>¥{{ formatCents(data?.open_batch?.summary.tea_total_cents || 0) }}</b></div>
+          <div class="mini"><span>收押金</span><b>¥{{ formatCents(data?.open_batch?.summary.add_total_cents || 0) }}</b></div>
+          <div class="mini"><span>退押金</span><b>¥{{ formatCents(data?.open_batch?.summary.refund_total_cents || 0) }}</b></div>
+          <div class="mini"><span>划转笔数</span><b>{{ data?.open_batch?.summary.transfer_count || 0 }}</b></div>
+          <div class="mini"><span>划转金额</span><b>¥{{ formatCents(data?.open_batch?.summary.transfer_out_total_cents || 0) }}</b></div>
+        </div>
+        <div v-if="!data?.open_batch" class="muted small" style="margin-top: 10px">
+          当前没有进行中的班次，本班统计从下一次开班开始。
         </div>
       </div>
 
@@ -55,11 +62,27 @@
             <b>{{ batchLabel }}</b>
             <span class="dim-tag">进行中</span>
           </div>
+          <div class="custody-line">
+            <span class="muted">在库现金</span>
+            <b>¥{{ formatCents(data.custody.amount_cents) }}</b>
+            <span class="muted">保管人 {{ data.custody.holder?.display_name || '未设置' }}</span>
+          </div>
           <div class="mini-grid">
             <div class="mini"><span>局数</span><b>{{ data.open_batch.summary.session_count }}</b></div>
             <div class="mini"><span>人次</span><b>{{ data.open_batch.summary.player_times }}</b></div>
             <div class="mini"><span>茶水</span><b>¥{{ formatCents(data.open_batch.summary.tea_total_cents) }}</b></div>
-            <div class="mini"><span>期末总押金</span><b>¥{{ formatCents(data.open_batch.summary.deposit_total_cents) }}</b></div>
+            <div class="mini"><span>玩家押金余额</span><b>¥{{ formatCents(data.open_batch.summary.deposit_total_cents) }}</b></div>
+          </div>
+          <div v-if="data.open_batch.operators.length" class="op-list">
+            <div class="op-head">
+              操作人 · 分红 {{ data.open_batch.dividend_rate_percent }}%
+            </div>
+            <div v-for="op in data.open_batch.operators" :key="op.user?.id || 'unknown'" class="op-row">
+              <span class="op-name">{{ op.user?.display_name || '未知' }}</span>
+              <span class="muted">{{ op.session_count }} 局 · {{ op.player_times }} 人次</span>
+              <span class="mono">茶 ¥{{ formatCents(op.tea_cents) }}</span>
+              <b class="div">分红 ¥{{ formatCents(op.dividend_cents) }}</b>
+            </div>
           </div>
           <el-button class="go" type="primary" plain @click="router.push({ name: 'batches' })">
             去看这一班的场次
@@ -209,6 +232,55 @@ onMounted(load)
   height: 7px;
   border-radius: 50%;
   background: var(--el-color-success);
+}
+
+.custody-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12.5px;
+}
+
+.custody-line b {
+  font-size: 16px;
+  color: var(--el-color-success);
+  font-variant-numeric: tabular-nums;
+}
+
+.op-list {
+  margin-top: 12px;
+  border-top: 1px solid #1c2028;
+  padding-top: 8px;
+}
+
+.op-head {
+  font-size: 11.5px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 6px;
+}
+
+.op-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  font-size: 12.5px;
+}
+
+.op-name {
+  min-width: 80px;
+  font-weight: 600;
+}
+
+.op-row .div {
+  margin-left: auto;
+  color: var(--el-color-warning);
+  font-variant-numeric: tabular-nums;
+}
+
+.small {
+  font-size: 12px;
 }
 
 .go {

@@ -14,6 +14,7 @@ from app.deps import Actor
 from app.errors import AppError, AuthError, ForbiddenError, NotFoundError, RateLimitError
 from app.models import Merchant, User
 from app.security import hash_password, validate_password_strength, verify_password
+from app.services import custody
 from app.services.audit import write_audit
 from app.timeutil import now_text
 
@@ -64,9 +65,9 @@ def active_merchant(session: Session, merchant_id: int) -> Merchant:
 
 
 def get_user_in_merchant(session: Session, user_id: int, merchant_id: int) -> User:
-    """按 id + 商家取账号。别家的账号一律当作不存在。"""
+    """按 id + 商家取账号。别家的账号、开发者账号一律当作不存在。"""
     user = session.get(User, user_id)
-    if user is None or user.merchant_id != merchant_id:
+    if user is None or user.merchant_id != merchant_id or user.is_superadmin:
         raise NotFoundError("找不到这个账号")
     return user
 
@@ -111,6 +112,7 @@ def user_row(user: User, merchant: Merchant | None = None) -> dict:
         "display_name": user.display_name or user.username,
         "role": user.role,
         "is_active": bool(user.is_active),
+        "is_superadmin": bool(user.is_superadmin),
         "merchant_id": user.merchant_id,
         "last_login_at": user.last_login_at,
         "created_at": user.created_at,
@@ -121,11 +123,39 @@ def user_row(user: User, merchant: Merchant | None = None) -> dict:
 
 
 def list_users(session: Session, merchant_id: int) -> list[User]:
+    """本店账号。开发者账号不出现在任何门店的账号列表里。"""
     return list(
         session.scalars(
-            select(User).where(User.merchant_id == merchant_id).order_by(User.id)
+            select(User)
+            .where(User.merchant_id == merchant_id, User.is_superadmin.is_(False))
+            .order_by(User.id)
         )
     )
+
+
+def list_user_options(session: Session, merchant_id: int) -> list[dict]:
+    """交班弹窗用：本店启用的账号（管理员排在前面）。"""
+    users = list(
+        session.scalars(
+            select(User)
+            .where(
+                User.merchant_id == merchant_id,
+                User.is_active.is_(True),
+                User.is_superadmin.is_(False),
+            )
+            .order_by(User.id)
+        )
+    )
+    users.sort(key=lambda item: (0 if item.role == "admin" else 1, item.id))
+    return [
+        {
+            "id": user.id,
+            "username": user.username,
+            "display_name": user.display_name or user.username,
+            "role": user.role,
+        }
+        for user in users
+    ]
 
 
 def create_user(
@@ -164,6 +194,9 @@ def create_user(
     )
     session.add(user)
     session.flush()
+    if role == "admin" and merchant.custodian_user_id is None:
+        merchant.custodian_user_id = user.id
+        merchant.updated_at = stamp
     write_audit(
         session,
         merchant_id=merchant.id,
@@ -195,6 +228,8 @@ def update_user(
         (role is not None and role != user.role) or (is_active is False)
     ):
         raise AppError("不能改自己的角色或停用自己")
+    if is_active is False and custody.is_holder(session, user.merchant_id, user.id):
+        raise AppError("该账号正在保管现金，先完成交班再停用")
     if role is not None and role not in ("admin", "staff"):
         raise AppError("角色不正确")
     if (role == "staff" or is_active is False) and user.role == "admin" and user.is_active:

@@ -55,7 +55,13 @@ def test_concurrent_close_only_one_wins(client, admin_headers, admin) -> None:
     def task(_: int) -> str:
         try:
             with dbmod.write_session() as session:
-                batch_service.close_batch(session, actor, batch_id)
+                batch_service.close_batch(
+                    session,
+                    actor,
+                    batch_id,
+                    tea_to_user_id=admin["id"],
+                    deposit_to_user_id=admin["id"],
+                )
             return "ok"
         except AppError:
             return "rejected"

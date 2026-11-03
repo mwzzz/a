@@ -39,6 +39,7 @@ def me(actor: Actor = Depends(get_current_user)) -> dict:
         "display_name": actor.name,
         "role": actor.role,
         "is_admin": actor.is_admin,
+        "is_superadmin": actor.is_superadmin,
         "merchant_id": actor.merchant_id,
         "merchant": {"id": actor.merchant_id, "name": actor.merchant_name},
     }

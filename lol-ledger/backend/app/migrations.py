@@ -1,11 +1,17 @@
 """建表 DDL、版本迁移与种子数据。
 
 结构唯一来源。v2 引入多商家：业务表全部带 merchant_id，唯一索引按商家维度重建。
+v3 引入开发者账号：users.is_superadmin + merchants.is_system，并预置一个隐藏的
+「平台管理」商家承接超管账号，超管不属于任何门店。
+v4 引入现金保管与分红：merchants.custodian_user_id、batches.dividend_rate_percent、
+cash_handovers 交接表；同时把手动扣押并入退押金。
 
 迁移策略：
-- 全新库：按 v2 直接建表，写入一个默认商家和默认配置。
+- 全新库：按 v4 直接建表，写入默认商家、平台商家和默认配置。
 - v1 库：先用 SQLite backup API 备份到 data/backups/pre-v2-*.db，
-  再在单事务里「旧表改名 → 建 v2 表 → 拷数据 → 删旧表 → 建索引」。
+  再在单事务里「旧表改名 → 建 v4 表 → 拷数据 → 删旧表 → 建索引」。
+- v2 库：备份到 pre-v3-*.db 加超管/平台商家，再备份到 pre-v4-*.db 加保管/分红。
+- v3 库：备份到 pre-v4-*.db，加保管/分红列和交接表，并转换手动扣押。
 - 只做加表 / 加列 / 加索引 / 一次性重建，不删业务列、不改业务名。
 """
 
@@ -21,8 +27,10 @@ from app.timeutil import now_text
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 DEFAULT_MERCHANT_NAME = "默认商家"
+PLATFORM_MERCHANT_NAME = "平台管理"
+DEFAULT_DIVIDEND_RATE = 50
 
 # v1 里存在的表，迁移时先改名再重建
 LEGACY_TABLES: tuple[str, ...] = (
@@ -41,13 +49,33 @@ SETTING_KEYS: tuple[str, ...] = (
     "last_tea_cents",
     "deposit_low_cents",
     "deposit_high_cents",
+    "dividend_rate_percent",
 )
 
 DEFAULT_SETTINGS: tuple[tuple[str, str], ...] = (
     ("last_tea_cents", "200"),
     ("deposit_low_cents", "3000"),
     ("deposit_high_cents", "6000"),
+    ("dividend_rate_percent", "50"),
 )
+
+CASH_HANDOVER_TABLE = """
+CREATE TABLE IF NOT EXISTS cash_handovers (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    merchant_id         INTEGER NOT NULL REFERENCES merchants(id),
+    batch_id            INTEGER NOT NULL REFERENCES batches(id),
+    from_user_id        INTEGER NOT NULL REFERENCES users(id),
+    deposit_to_user_id  INTEGER NOT NULL REFERENCES users(id),
+    tea_to_user_id      INTEGER NOT NULL REFERENCES users(id),
+    deposit_cents       INTEGER NOT NULL DEFAULT 0,
+    tea_cents           INTEGER NOT NULL DEFAULT 0,
+    deposit_method      TEXT    NOT NULL DEFAULT 'wechat',
+    tea_method          TEXT    NOT NULL DEFAULT 'wechat',
+    note                TEXT    NOT NULL DEFAULT '',
+    created_by          INTEGER NOT NULL REFERENCES users(id),
+    created_at          TEXT    NOT NULL
+)
+"""
 
 TABLE_STATEMENTS: tuple[str, ...] = (
     """
@@ -57,6 +85,8 @@ TABLE_STATEMENTS: tuple[str, ...] = (
         note       TEXT    NOT NULL DEFAULT '',
         status     TEXT    NOT NULL DEFAULT 'active'
                            CHECK (status IN ('active', 'disabled')),
+        is_system  INTEGER NOT NULL DEFAULT 0 CHECK (is_system IN (0, 1)),
+        custodian_user_id INTEGER,
         created_at TEXT    NOT NULL,
         updated_at TEXT    NOT NULL
     )
@@ -70,6 +100,7 @@ TABLE_STATEMENTS: tuple[str, ...] = (
         display_name        TEXT    NOT NULL DEFAULT '',
         role                TEXT    NOT NULL CHECK (role IN ('admin', 'staff')),
         is_active           INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+        is_superadmin       INTEGER NOT NULL DEFAULT 0 CHECK (is_superadmin IN (0, 1)),
         password_changed_at TEXT    NOT NULL,
         last_login_at       TEXT,
         created_at          TEXT    NOT NULL,
@@ -113,6 +144,7 @@ TABLE_STATEMENTS: tuple[str, ...] = (
         transfer_count           INTEGER,
         net_change_cents         INTEGER,
         deposit_total_cents      INTEGER,
+        dividend_rate_percent    INTEGER NOT NULL DEFAULT 50,
         CHECK ((status = 'open' AND closed_at IS NULL AND closed_by IS NULL)
             OR (status = 'closed' AND closed_at IS NOT NULL AND closed_by IS NOT NULL))
     )
@@ -198,10 +230,12 @@ TABLE_STATEMENTS: tuple[str, ...] = (
         created_at  TEXT    NOT NULL
     )
     """,
+    CASH_HANDOVER_TABLE,
 )
 
 INDEX_STATEMENTS: tuple[str, ...] = (
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_merchants_name ON merchants(name)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_merchants_system ON merchants(is_system) WHERE is_system = 1",
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_username ON users(username)",
     "CREATE INDEX IF NOT EXISTS ix_users_merchant ON users(merchant_id)",
     """
@@ -240,6 +274,14 @@ INDEX_STATEMENTS: tuple[str, ...] = (
         ON ledger(merchant_id, reason, created_at DESC)
     """,
     "CREATE INDEX IF NOT EXISTS ix_audit_created ON audit_logs(merchant_id, created_at DESC, id DESC)",
+)
+
+HANDOVER_INDEX_STATEMENTS: tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS ix_handovers_batch ON cash_handovers(batch_id)",
+    """
+    CREATE INDEX IF NOT EXISTS ix_handovers_merchant_time
+        ON cash_handovers(merchant_id, created_at DESC, id DESC)
+    """,
 )
 
 # v1 → v2 的数据搬运。全部按显式列名复制，merchant_id 统一填默认商家。
@@ -348,14 +390,36 @@ def _assert_foreign_keys(conn: sqlite3.Connection) -> None:
         raise RuntimeError(f"外键校验失败：{rows[:5]}")
 
 
-def _insert_merchant(conn: sqlite3.Connection, name: str, note: str = "") -> int:
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+    return any(row[1] == column for row in rows)
+
+
+def _insert_merchant(
+    conn: sqlite3.Connection, name: str, note: str = "", is_system: int = 0
+) -> int:
     stamp = now_text()
     cursor = conn.execute(
-        "INSERT INTO merchants (name, note, status, created_at, updated_at) "
-        "VALUES (?, ?, 'active', ?, ?)",
-        (name, note, stamp, stamp),
+        "INSERT INTO merchants (name, note, status, is_system, created_at, updated_at) "
+        "VALUES (?, ?, 'active', ?, ?, ?)",
+        (name, note, int(is_system), stamp, stamp),
     )
     return int(cursor.lastrowid or 0)
+
+
+def _ensure_platform_merchant(conn: sqlite3.Connection) -> int:
+    """平台商家只用于挂开发者账号，不参与门店经营，也不出现在商家列表里。"""
+    row = conn.execute("SELECT id FROM merchants WHERE is_system = 1").fetchone()
+    if row is not None:
+        return int(row[0])
+    name = PLATFORM_MERCHANT_NAME
+    suffix = 2
+    while conn.execute("SELECT 1 FROM merchants WHERE name = ?", (name,)).fetchone():
+        name = f"{PLATFORM_MERCHANT_NAME}{suffix}"
+        suffix += 1
+    return _insert_merchant(
+        conn, name, "开发者账号专属系统商家，不参与门店经营", is_system=1
+    )
 
 
 def _seed_settings(conn: sqlite3.Connection, merchant_id: int) -> None:
@@ -368,12 +432,12 @@ def _seed_settings(conn: sqlite3.Connection, merchant_id: int) -> None:
         )
 
 
-def _backup_before_v2(conn: sqlite3.Connection, db_path: Path) -> Path:
+def _backup(conn: sqlite3.Connection, db_path: Path, label: str) -> Path:
     """迁移前整库备份。WAL 模式下必须走 backup API，不能直接 cp。"""
     folder = db_path.parent / "backups"
     folder.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    target_path = folder / f"pre-v2-{stamp}.db"
+    target_path = folder / f"{label}-{stamp}.db"
     target = sqlite3.connect(str(target_path))
     try:
         with target:
@@ -412,6 +476,50 @@ def _copy_settings(conn: sqlite3.Connection, merchant_id: int) -> None:
         )
 
 
+def _seed_dividend_rate(conn: sqlite3.Connection) -> None:
+    stamp = now_text()
+    conn.execute(
+        "INSERT OR IGNORE INTO merchant_settings (merchant_id, key, value, updated_at) "
+        "SELECT id, 'dividend_rate_percent', ?, ? FROM merchants WHERE is_system = 0",
+        (str(DEFAULT_DIVIDEND_RATE), stamp),
+    )
+
+
+def _set_initial_custodians(conn: sqlite3.Connection) -> None:
+    """老库没有交接记录：有进行中班次就给开班人，否则给第一个启用的管理员。"""
+    conn.execute(
+        """
+        UPDATE merchants
+        SET custodian_user_id = COALESCE(
+            (SELECT b.opened_by FROM batches b
+              WHERE b.merchant_id = merchants.id AND b.status = 'open'
+              ORDER BY b.id DESC LIMIT 1),
+            (SELECT u.id FROM users u
+              WHERE u.merchant_id = merchants.id
+                AND u.role = 'admin' AND u.is_active = 1 AND u.is_superadmin = 0
+              ORDER BY u.id LIMIT 1)
+        )
+        WHERE is_system = 0 AND custodian_user_id IS NULL
+        """
+    )
+
+
+def _convert_manual_deduct(conn: sqlite3.Connection) -> None:
+    """手动扣押并入退押金：金额与余额方向完全一致，顺便修正已关班快照。"""
+    conn.execute(
+        "UPDATE ledger SET reason = 'refund' "
+        "WHERE reason = 'manual_deduct' AND amount_cents > 0"
+    )
+    conn.execute(
+        """
+        UPDATE batches
+        SET refund_total_cents = COALESCE(refund_total_cents, 0) + COALESCE(deduct_total_cents, 0),
+            deduct_total_cents = 0
+        WHERE status = 'closed' AND COALESCE(deduct_total_cents, 0) > 0
+        """
+    )
+
+
 def _create_fresh(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys=OFF")
     conn.execute("BEGIN IMMEDIATE")
@@ -420,12 +528,18 @@ def _create_fresh(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
         merchant_id = _insert_merchant(conn, DEFAULT_MERCHANT_NAME)
         _seed_settings(conn, merchant_id)
-        for statement in INDEX_STATEMENTS:
+        platform_id = _ensure_platform_merchant(conn)
+        for statement in INDEX_STATEMENTS + HANDOVER_INDEX_STATEMENTS:
             conn.execute(statement)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         _assert_foreign_keys(conn)
         conn.execute("COMMIT")
-        logger.info("已初始化 v2 结构，默认商家 id=%s", merchant_id)
+        logger.info(
+            "已初始化 v%s 结构，默认商家 id=%s，平台商家 id=%s",
+            SCHEMA_VERSION,
+            merchant_id,
+            platform_id,
+        )
     except Exception:
         _rollback(conn)
         raise
@@ -434,7 +548,7 @@ def _create_fresh(conn: sqlite3.Connection) -> None:
 
 
 def _upgrade_v1(conn: sqlite3.Connection, db_path: Path) -> None:
-    backup = _backup_before_v2(conn, db_path)
+    backup = _backup(conn, db_path, "pre-v2")
     logger.info("迁移前已备份：%s", backup)
 
     default_name = _legacy_shop_name(conn) or DEFAULT_MERCHANT_NAME
@@ -459,13 +573,81 @@ def _upgrade_v1(conn: sqlite3.Connection, db_path: Path) -> None:
             if _table_exists(conn, f"{table}__old"):
                 conn.execute(f'DROP TABLE "{table}__old"')
 
-        for statement in INDEX_STATEMENTS:
+        _ensure_platform_merchant(conn)
+        _seed_dividend_rate(conn)
+        _set_initial_custodians(conn)
+        _convert_manual_deduct(conn)
+
+        for statement in INDEX_STATEMENTS + HANDOVER_INDEX_STATEMENTS:
             conn.execute(statement)
 
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         _assert_foreign_keys(conn)
         conn.execute("COMMIT")
-        logger.info("v1 → v2 迁移完成，默认商家 %s（id=%s）", default_name, merchant_id)
+        logger.info(
+            "v1 → v%s 迁移完成，默认商家 %s（id=%s）", SCHEMA_VERSION, default_name, merchant_id
+        )
+    except Exception:
+        _rollback(conn)
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _upgrade_v2_to_v3(conn: sqlite3.Connection, db_path: Path) -> None:
+    """v2 → v3：加超管标记列，预置平台商家。只加列，不动业务数据。"""
+    backup = _backup(conn, db_path, "pre-v3")
+    logger.info("迁移前已备份：%s", backup)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not _column_exists(conn, "merchants", "is_system"):
+            conn.execute(
+                "ALTER TABLE merchants ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0"
+            )
+        if not _column_exists(conn, "users", "is_superadmin"):
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN is_superadmin INTEGER NOT NULL DEFAULT 0"
+            )
+        platform_id = _ensure_platform_merchant(conn)
+        for statement in INDEX_STATEMENTS:
+            conn.execute(statement)
+        conn.execute("PRAGMA user_version = 3")
+        _assert_foreign_keys(conn)
+        conn.execute("COMMIT")
+        logger.info("v2 → v3 迁移完成，平台商家 id=%s", platform_id)
+    except Exception:
+        _rollback(conn)
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _upgrade_v3_to_v4(conn: sqlite3.Connection, db_path: Path) -> None:
+    """v3 → v4：保管人、交班交接记录、分红比例，并把手动扣押并入退押金。"""
+    backup = _backup(conn, db_path, "pre-v4")
+    logger.info("迁移前已备份：%s", backup)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not _column_exists(conn, "merchants", "custodian_user_id"):
+            conn.execute("ALTER TABLE merchants ADD COLUMN custodian_user_id INTEGER")
+        if not _column_exists(conn, "batches", "dividend_rate_percent"):
+            conn.execute(
+                "ALTER TABLE batches ADD COLUMN dividend_rate_percent INTEGER NOT NULL DEFAULT 50"
+            )
+        conn.execute(CASH_HANDOVER_TABLE)
+        _seed_dividend_rate(conn)
+        _set_initial_custodians(conn)
+        _convert_manual_deduct(conn)
+        for statement in HANDOVER_INDEX_STATEMENTS:
+            conn.execute(statement)
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        _assert_foreign_keys(conn)
+        conn.execute("COMMIT")
+        logger.info("v3 → v4 迁移完成：交接表、保管人、分红比例就绪")
     except Exception:
         _rollback(conn)
         raise
@@ -484,7 +666,12 @@ def ensure_schema() -> None:
         if version == 0 and not _table_exists(conn, "users"):
             _create_fresh(conn)
             return
-        _upgrade_v1(conn, path)
+        if version < 2:
+            _upgrade_v1(conn, path)
+            return
+        if version < 3:
+            _upgrade_v2_to_v3(conn, path)
+        _upgrade_v3_to_v4(conn, path)
     finally:
         conn.close()
 

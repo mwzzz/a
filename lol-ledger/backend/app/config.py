@@ -25,9 +25,19 @@ class Settings(BaseSettings):
     debug: bool = False
     cors_origins: str = "http://localhost:5173"
 
+    ai_enabled: bool = False
+    ai_api_key: str = ""
+    ai_base_url: str = "https://api.deepseek.com"
+    ai_model: str = "deepseek-flash"
+    ai_timeout_seconds: float = 25.0
+
     @property
     def using_dev_secret(self) -> bool:
         return self.jwt_secret == DEV_SECRET
+
+    @property
+    def ai_ready(self) -> bool:
+        return bool(self.ai_enabled and self.ai_api_key.strip())
 
     @property
     def cors_origin_list(self) -> list[str]:

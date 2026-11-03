@@ -30,7 +30,6 @@
       <el-select v-if="tab === 'deposits'" v-model="reason" placeholder="全部原因" style="width: 150px" @change="reload">
         <el-option label="全部原因" value="" />
         <el-option label="正常扣押" value="normal_deduct" />
-        <el-option label="手动扣押" value="manual_deduct" />
         <el-option label="加押金" value="add_deposit" />
         <el-option label="退押金" value="refund" />
         <el-option label="划押转出" value="transfer_out" />

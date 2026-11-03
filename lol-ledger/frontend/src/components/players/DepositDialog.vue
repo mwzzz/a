@@ -42,7 +42,7 @@
 </template>
 
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 
 import { moneyApi } from '@/api'
@@ -53,7 +53,7 @@ import { formatCents, parseYuan } from '@/utils/money'
 const props = defineProps<{
   modelValue: boolean
   player: PlayerRow | null
-  mode: 'add' | 'refund' | 'deduct'
+  mode: 'add' | 'refund'
 }>()
 
 const emit = defineEmits<{
@@ -65,17 +65,11 @@ const amount = ref('')
 const note = ref('')
 const saving = ref(false)
 
-const title = computed(() => {
-  if (props.mode === 'add') return '加押金'
-  if (props.mode === 'refund') return '退押金'
-  return '扣押金'
-})
+const title = computed(() => (props.mode === 'add' ? '加押金' : '退押金'))
 
-const hint = computed(() => {
-  if (props.mode === 'refund') return '不能超过当前押金'
-  if (props.mode === 'deduct') return '可以扣成负数'
-  return '金额必须大于 0'
-})
+const hint = computed(() =>
+  props.mode === 'refund' ? '不能超过当前押金' : '金额必须大于 0',
+)
 
 const parsed = computed(() => parseYuan(amount.value))
 
@@ -124,27 +118,15 @@ async function submit() {
     ElMessage.warning(error.value)
     return
   }
-  if (props.mode === 'deduct' && afterCents.value !== null && afterCents.value < 0) {
-    try {
-      await ElMessageBox.confirm(
-        `扣押后押金会变成 ¥${formatCents(afterCents.value)}，确定继续？`,
-        '请确认',
-        { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' },
-      )
-    } catch {
-      return
-    }
-  }
   if (!props.player) return
 
   saving.value = true
   try {
     const playerId = props.player.id
-    const value = props.mode === 'add'
-      ? await moneyApi.addDeposit(playerId, cents, note.value.trim())
-      : props.mode === 'refund'
-        ? await moneyApi.refund(playerId, cents, note.value.trim())
-        : await moneyApi.deduct(playerId, cents, note.value.trim())
+    const value =
+      props.mode === 'add'
+        ? await moneyApi.addDeposit(playerId, cents, note.value.trim())
+        : await moneyApi.refund(playerId, cents, note.value.trim())
     ElMessage.success(`${title.value}成功`)
     emit('saved', value.player)
     close()

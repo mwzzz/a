@@ -33,17 +33,7 @@
       </div>
     </div>
 
-    <div class="ai-box" @click="notReady" @paste.prevent="notReady" @dragover.prevent @drop.prevent="notReady">
-      <div class="ai-head">
-        <span class="ai-title">AI 识别玩家</span>
-        <span class="dim-tag">即将上线</span>
-      </div>
-      <div class="ai-body">
-        <el-icon class="ai-icon"><Picture /></el-icon>
-        <div>点击此处，然后 Ctrl+V 粘贴截图</div>
-        <div class="ai-sub">或把截图拖到这里，自动识别并填入玩家（下一期上线）</div>
-      </div>
-    </div>
+    <AiPlayerRecognition :active="modelValue" @apply="applyAiPlayers" />
 
     <div class="players-head">
       <span class="section-title">参与玩家</span>
@@ -87,12 +77,12 @@
 </template>
 
 <script setup lang="ts">
-import { Picture } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 
 import { sessionApi } from '@/api'
 import type { PreviewPayload } from '@/api/types'
+import AiPlayerRecognition from '@/components/batches/AiPlayerRecognition.vue'
 import PlayerSelect from '@/components/common/PlayerSelect.vue'
 import { toIso } from '@/utils/datetime'
 import { formatCents, parseYuan } from '@/utils/money'
@@ -131,8 +121,43 @@ function otherSelected(index: number): number[] {
   return slots.value.filter((item, position) => Boolean(item) && position !== index) as number[]
 }
 
-function notReady() {
-  ElMessage.info('AI 识别玩家即将上线，这一期先手动选人')
+async function applyAiPlayers(ids: number[]) {
+  const unique = [...new Set(ids)].slice(0, 10)
+  if (!unique.length) return
+
+  const existing = new Set(filledIds.value)
+  const fresh = unique.filter((id) => !existing.has(id))
+  if (!fresh.length) {
+    ElMessage.info('识别到的人已经在场次里了')
+    return
+  }
+
+  const emptySlots = slots.value
+    .map((value, index) => (value === null ? index : -1))
+    .filter((index) => index >= 0)
+
+  if (fresh.length <= emptySlots.length) {
+    fresh.forEach((id, position) => {
+      slots.value[emptySlots[position]] = id
+    })
+    ElMessage.success(`已填入 ${fresh.length} 个玩家，请确认茶水`)
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `识别出 ${unique.length} 人，但当前只剩 ${emptySlots.length} 个空位，是否用识别结果覆盖已选玩家？`,
+      '覆盖当前选择',
+      { confirmButtonText: '覆盖', cancelButtonText: '不覆盖', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  slots.value = Array(10).fill(null)
+  unique.forEach((id, position) => {
+    slots.value[position] = id
+  })
+  ElMessage.success(`已填入 ${unique.length} 个玩家，请确认茶水`)
 }
 
 watch(
@@ -244,52 +269,6 @@ async function submit() {
 .field label {
   font-size: 12.5px;
   color: var(--el-text-color-secondary);
-}
-
-.ai-box {
-  border: 1px dashed #303745;
-  border-radius: 10px;
-  padding: 12px;
-  margin-bottom: 16px;
-  cursor: pointer;
-  background: #101319;
-  transition: border-color 0.15s ease;
-}
-
-.ai-box:hover {
-  border-color: var(--el-color-primary);
-}
-
-.ai-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.ai-title {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.ai-body {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 14px 0 10px;
-  color: var(--el-text-color-secondary);
-  font-size: 12.5px;
-}
-
-.ai-icon {
-  font-size: 26px;
-  color: #3c4353;
-}
-
-.ai-sub {
-  font-size: 11.5px;
-  color: #5d6575;
 }
 
 .players-head {

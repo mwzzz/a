@@ -11,7 +11,6 @@ DepositLevel = Literal["low", "warn", "safe"]
 
 REASON_LABELS = {
     "normal_deduct": "正常扣押",
-    "manual_deduct": "手动扣押",
     "refund": "退押金",
     "add_deposit": "加押金",
     "transfer_out": "划押转出",

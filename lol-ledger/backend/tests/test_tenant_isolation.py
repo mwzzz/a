@@ -7,6 +7,7 @@ from sqlalchemy import text
 from app import db as dbmod
 from app.models import Merchant
 from app.timeutil import now_text
+from tests.conftest import close_batch
 from tests.test_players import add_money, new_player
 from tests.test_sessions import create_session, open_batch
 
@@ -73,7 +74,6 @@ def test_cannot_write_to_other_merchant_player(
     for path, payload in (
         (f"/api/v1/players/{player['id']}/deposits", {"amount_cents": 500}),
         (f"/api/v1/players/{player['id']}/refunds", {"amount_cents": 100}),
-        (f"/api/v1/players/{player['id']}/deductions", {"amount_cents": 100}),
     ):
         response = client.post(path, json=payload, headers=admin_b_headers)
         assert response.status_code == 404, response.text
@@ -130,9 +130,15 @@ def test_batches_and_sessions_isolated(
     ):
         assert client.get(path, headers=admin_b_headers).status_code == 404, path
 
+    me_b = client.get("/api/v1/auth/me", headers=admin_b_headers).json()
     assert (
         client.post(
-            f"/api/v1/batches/{batch_id}/close", json={}, headers=admin_b_headers
+            f"/api/v1/batches/{batch_id}/close",
+            json={
+                "tea_to_user_id": me_b["id"],
+                "deposit_to_user_id": me_b["id"],
+            },
+            headers=admin_b_headers,
         ).status_code
         == 404
     )
@@ -190,7 +196,9 @@ def test_records_and_overview_isolated(
     overview = client.get("/api/v1/overview", headers=admin_b_headers).json()
     assert overview["player_count"] == 1
     assert overview["total_deposit_cents"] == 5000
-    assert overview["today"]["tea_total_cents"] == 0
+    assert overview["open_batch"] is None
+    assert overview["custody"]["tea_cents"] == 0
+    assert overview["custody"]["amount_cents"] == 5000
     assert overview["recent_records"][0]["player"]["game_id"] == "乙店流水"
 
     sessions = client.get("/api/v1/records/sessions", headers=admin_b_headers).json()
@@ -318,12 +326,7 @@ def test_reconcile_and_close_scoped(client, admin_headers, admin_b_headers) -> N
     assert report_a["problems"][0]["game_id"] == "甲店坏账"
 
     batch_b = _open_batch_id(client, admin_b_headers)
-    assert (
-        client.post(
-            f"/api/v1/batches/{batch_b}/close", json={}, headers=admin_b_headers
-        ).status_code
-        == 200
-    )
+    assert close_batch(client, batch_b, admin_b_headers).status_code == 200
 
 
 def test_settings_isolated(client, admin_headers, admin_b_headers) -> None:

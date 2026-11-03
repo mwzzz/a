@@ -36,7 +36,7 @@
         </el-button>
       </el-form>
 
-      <div class="foot">账号由管理员分配，忘记密码请联系店长重置。</div>
+      <div class="foot">门店账号由店长分配，忘记密码请联系店长重置。</div>
     </div>
   </div>
 </template>
@@ -65,6 +65,10 @@ async function submit() {
   loading.value = true
   try {
     await auth.login(username.value.trim(), password.value)
+    if (auth.isSuperadmin) {
+      router.replace({ name: 'platform' })
+      return
+    }
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
     router.replace(redirect)
   } finally {

@@ -163,12 +163,11 @@ systemctl is-active lol-ledger-api
 cat <<'EOF'
 
 完成。还需要两步：
-  1) 建商家和管理员（首次自带「默认商家」，可以直接改名或另开）：
+  1) 建开发者账号（只需一次，之后商家和账号都在网页「平台管理」里点，不用再敲命令）：
        cd /opt/lol-ledger/backend
        lg() { sudo -u lol env DB_PATH=/opt/lol-ledger/data/ledger.db /opt/lol-ledger/venv/bin/python "$@"; }
-       lg -m app.cli create-merchant --name "极光电竞"
-       lg -m app.cli create-admin --username jg-boss --merchant "极光电竞"
-  2) 浏览器打开 http://<服务器IP>/（就是原来的 80 端口，安全组本来就放行）
+       lg -m app.cli create-superadmin --username admin
+  2) 浏览器打开 http://<服务器IP>/（就是原来的 80 端口，安全组本来就放行），用开发者账号登录
 
 要恢复原来的官网：
   sudo mv /etc/nginx/conf.d/neizhanjizhang.conf.disabled-<时间戳> /etc/nginx/conf.d/neizhanjizhang.conf

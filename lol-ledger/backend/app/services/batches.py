@@ -7,9 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.deps import Actor
 from app.errors import AppError
-from app.models import Batch, GameSession, LedgerEntry, Player, SessionPlayer
+from app.models import Batch, GameSession, LedgerEntry, Player, SessionPlayer, User
 from app.serializers import session_row, user_brief
 from app.scope import scoped_get
+from app.services import custody, options
 from app.services.audit import write_audit
 from app.services.money import INCOMING_REASONS
 from app.services.players import clean_text
@@ -20,9 +21,55 @@ REASON_KEYS = {
     "normal_deduct": "tea_total_cents",
     "add_deposit": "add_total_cents",
     "refund": "refund_total_cents",
-    "manual_deduct": "deduct_total_cents",
     "transfer_out": "transfer_out_total_cents",
 }
+
+
+def dividend_cents(tea_cents: int, rate_percent: int) -> int:
+    """按分计算，四舍五入到分。"""
+    return (int(tea_cents) * int(rate_percent) + 50) // 100
+
+
+def operator_stats(
+    session: Session, batch_id: int, merchant_id: int, rate_percent: int
+) -> list[dict]:
+    rows = session.execute(
+        select(
+            GameSession.operator_id,
+            func.count(),
+            func.coalesce(func.sum(GameSession.player_count), 0),
+            func.coalesce(
+                func.sum(GameSession.tea_fee_cents * GameSession.player_count), 0
+            ),
+        )
+        .where(
+            GameSession.merchant_id == merchant_id,
+            GameSession.batch_id == batch_id,
+        )
+        .group_by(GameSession.operator_id)
+    ).all()
+    if not rows:
+        return []
+    users = {
+        user.id: user
+        for user in session.scalars(
+            select(User).where(User.id.in_([row[0] for row in rows]))
+        )
+    }
+    result = []
+    for operator_id, count, player_times, tea_cents in rows:
+        tea = int(tea_cents or 0)
+        result.append(
+            {
+                "user": user_brief(users.get(operator_id)),
+                "session_count": int(count or 0),
+                "player_times": int(player_times or 0),
+                "tea_cents": tea,
+                "dividend_cents": dividend_cents(tea, rate_percent),
+            }
+        )
+    result.sort(key=lambda item: (-item["tea_cents"], -item["session_count"]))
+    return result
 
 
 def short_time(value: str | None) -> str:
@@ -129,7 +176,6 @@ def snapshot_summary(batch: Batch) -> dict:
         "tea_total_cents": int(batch.tea_total_cents or 0),
         "add_total_cents": int(batch.add_total_cents or 0),
         "refund_total_cents": int(batch.refund_total_cents or 0),
-        "deduct_total_cents": int(batch.deduct_total_cents or 0),
         "transfer_out_total_cents": int(batch.transfer_out_total_cents or 0),
         "transfer_count": int(batch.transfer_count or 0),
         "net_change_cents": net,
@@ -161,6 +207,7 @@ def open_batch(
     )
     session.add(batch)
     session.flush()
+    custody.ensure_holder(session, actor.merchant_id, actor.id)
     write_audit(
         session,
         merchant_id=actor.merchant_id,
@@ -179,6 +226,10 @@ def close_batch(
     actor: Actor,
     batch_id: int,
     *,
+    tea_to_user_id: int,
+    deposit_to_user_id: int,
+    tea_method: str = "wechat",
+    deposit_method: str = "wechat",
     note: str = "",
     ip: str = "",
 ) -> Batch:
@@ -192,6 +243,20 @@ def close_batch(
     if not report["ok"]:
         raise AppError("对账不通过，不能交班。请联系管理员检查押金余额。")
 
+    rate = options.dividend_rate(session, merchant_id)
+    custody.record_close_handover(
+        session,
+        actor,
+        batch,
+        summary,
+        tea_to_user_id=tea_to_user_id,
+        deposit_to_user_id=deposit_to_user_id,
+        tea_method=tea_method,
+        deposit_method=deposit_method,
+        note=note,
+        ip=ip,
+    )
+
     stamp = now_text()
     batch.status = "closed"
     batch.closed_at = stamp
@@ -203,11 +268,12 @@ def close_batch(
     batch.tea_total_cents = summary["tea_total_cents"]
     batch.add_total_cents = summary["add_total_cents"]
     batch.refund_total_cents = summary["refund_total_cents"]
-    batch.deduct_total_cents = summary["deduct_total_cents"]
+    batch.deduct_total_cents = 0
     batch.transfer_out_total_cents = summary["transfer_out_total_cents"]
     batch.transfer_count = summary["transfer_count"]
     batch.net_change_cents = summary["net_change_cents"]
     batch.deposit_total_cents = summary["deposit_total_cents"]
+    batch.dividend_rate_percent = rate
 
     write_audit(
         session,
@@ -230,6 +296,11 @@ def _summary_for(session: Session, batch: Batch) -> dict:
 
 def batch_row(session: Session, batch: Batch, sessions: list[dict] | None = None) -> dict:
     summary = _summary_for(session, batch)
+    if batch.status == "closed":
+        rate = int(batch.dividend_rate_percent or 50)
+    else:
+        rate = options.dividend_rate(session, batch.merchant_id)
+    handover = custody.latest_handover(session, batch.id)
     return {
         "id": batch.id,
         "label": batch.label,
@@ -243,6 +314,9 @@ def batch_row(session: Session, batch: Batch, sessions: list[dict] | None = None
         "session_count": summary["session_count"],
         "player_times": summary["player_times"],
         "summary": summary,
+        "dividend_rate_percent": rate,
+        "operators": operator_stats(session, batch.id, batch.merchant_id, rate),
+        "handover": custody.handover_row(handover) if handover else None,
         "sessions": sessions or [],
     }
 

@@ -7,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from app import db as dbmod
+from tests.conftest import close_batch
 from tests.test_players import add_money, new_player
 from tests.test_sessions import create_session, open_batch
 
@@ -44,15 +45,12 @@ def test_close_batch_snapshot(client, admin_headers) -> None:
         f"/api/v1/players/{p1}/refunds", json={"amount_cents": 200}, headers=admin_headers
     )
     client.post(
-        f"/api/v1/players/{p3}/deductions", json={"amount_cents": 100}, headers=admin_headers
-    )
-    client.post(
         "/api/v1/transfers",
         json={"from_player_id": p1, "to_player_id": p3, "amount_cents": 300},
         headers=admin_headers,
     )
 
-    response = client.post(f"/api/v1/batches/{batch_id}/close", json={}, headers=admin_headers)
+    response = close_batch(client, batch_id, admin_headers)
     assert response.status_code == 200, response.text
     summary = response.json()
 
@@ -61,11 +59,10 @@ def test_close_batch_snapshot(client, admin_headers) -> None:
     assert summary["tea_total_cents"] == 500
     assert summary["add_total_cents"] == 1000
     assert summary["refund_total_cents"] == 200
-    assert summary["deduct_total_cents"] == 100
     assert summary["transfer_out_total_cents"] == 300
     assert summary["transfer_count"] == 1
-    assert summary["deposit_total_cents"] == 200
-    assert summary["net_change_cents"] == 200
+    assert summary["deposit_total_cents"] == 300
+    assert summary["net_change_cents"] == 300
     assert summary["opening_total_cents"] == 0
 
     detail = client.get(f"/api/v1/batches/{batch_id}", headers=admin_headers).json()
@@ -76,10 +73,8 @@ def test_close_batch_snapshot(client, admin_headers) -> None:
 
 def test_close_twice_rejected(client, admin_headers) -> None:
     batch_id = open_batch(client, admin_headers)
-    assert client.post(
-        f"/api/v1/batches/{batch_id}/close", json={}, headers=admin_headers
-    ).status_code == 200
-    again = client.post(f"/api/v1/batches/{batch_id}/close", json={}, headers=admin_headers)
+    assert close_batch(client, batch_id, admin_headers).status_code == 200
+    again = close_batch(client, batch_id, admin_headers)
     assert again.status_code == 400
     assert "交班" in again.json()["detail"]
 
@@ -104,7 +99,7 @@ def test_close_blocked_by_reconcile(client, admin_headers) -> None:
         session.execute(
             text("UPDATE players SET deposit_cents = 9999 WHERE id = :pid"), {"pid": pid}
         )
-    response = client.post(f"/api/v1/batches/{batch_id}/close", json={}, headers=admin_headers)
+    response = close_batch(client, batch_id, admin_headers)
     assert response.status_code == 400
     assert "对账" in response.json()["detail"]
 
@@ -112,12 +107,19 @@ def test_close_blocked_by_reconcile(client, admin_headers) -> None:
     assert detail["status"] == "open"
 
 
-def test_staff_can_close_batch(client, admin_headers, staff_headers) -> None:
+def test_staff_cannot_close_when_admin_holds_cash(
+    client, admin_headers, staff_headers, admin
+) -> None:
     batch_id = open_batch(client, admin_headers)
-    response = client.post(
-        f"/api/v1/batches/{batch_id}/close", json={}, headers=staff_headers
+    response = close_batch(
+        client,
+        batch_id,
+        staff_headers,
+        tea_to_id=admin["id"],
+        deposit_to_id=admin["id"],
     )
-    assert response.status_code == 200
+    assert response.status_code == 400
+    assert "保管人" in response.json()["detail"]
 
 
 def test_batch_list_includes_sessions(client, admin_headers) -> None:

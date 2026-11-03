@@ -34,6 +34,55 @@ class PasswordResetIn(BaseModel):
     new_password: str = Field(min_length=1, max_length=128)
 
 
+class MerchantCreateIn(BaseModel):
+    """开发者开通商家。管理员可以同时建，也可以稍后再建。"""
+
+    name: str = Field(min_length=1, max_length=64)
+    note: str = Field(default="", max_length=200)
+    admin_username: str | None = Field(default=None, max_length=64)
+    admin_password: str | None = Field(default=None, max_length=128)
+    admin_display_name: str = Field(default="", max_length=64)
+
+
+class MerchantUpdateIn(BaseModel):
+    name: str | None = Field(default=None, max_length=64)
+    note: str | None = Field(default=None, max_length=200)
+    status: Literal["active", "disabled"] | None = None
+
+
+class AiPlayerRef(BaseModel):
+    id: int
+    game_id: str
+    account: str = ""
+    deposit_cents: int
+
+
+class AiCandidateOut(BaseModel):
+    player: AiPlayerRef
+    score: float
+
+
+class AiPlayerItemOut(BaseModel):
+    raw_name: str
+    status: Literal["matched", "ambiguous", "unmatched"]
+    confidence: float | None = None
+    team: int | None = None
+    matched_player: AiPlayerRef | None = None
+    candidates: list[AiCandidateOut] = Field(default_factory=list)
+
+
+class AiRecognizeOut(BaseModel):
+    items: list[AiPlayerItemOut]
+    count: int
+    warnings: list[str] = Field(default_factory=list)
+    elapsed_ms: int
+
+
+class AiStatusOut(BaseModel):
+    enabled: bool
+    model: str
+
+
 class PlayerCreateIn(BaseModel):
     game_id: str = Field(min_length=1, max_length=64)
     nickname: str = Field(default="", max_length=64)
@@ -66,6 +115,12 @@ class BatchCreateIn(BaseModel):
 
 
 class BatchCloseIn(BaseModel):
+    """交班：茶水营业款上缴管理员，押金余额交给下一保管人。"""
+
+    tea_to_user_id: int
+    deposit_to_user_id: int
+    tea_method: str = Field(default="wechat", max_length=16)
+    deposit_method: str = Field(default="wechat", max_length=16)
     note: str = Field(default="", max_length=200)
 
 
@@ -87,4 +142,5 @@ class SettingsUpdateIn(BaseModel):
     last_tea_cents: int | None = None
     deposit_low_cents: int | None = None
     deposit_high_cents: int | None = None
+    dividend_rate_percent: int | None = Field(default=None, ge=0, le=100)
     shop_name: str | None = Field(default=None, max_length=64)

@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.deps import Actor, client_ip, get_current_user, get_read_db, get_write_db, require_admin
 from app.schemas import PlayerCreateIn, PlayerUpdateIn
 from app.serializers import player_row
+from app.services import imports as import_service
 from app.services import options
 from app.services import players as player_service
+from app.services.imports import ImportValidationError
 from app.services.records import player_ledger
 
 router = APIRouter(prefix="/players", tags=["玩家"])
@@ -60,6 +63,29 @@ def player_options(
         exclude_ids=_parse_ids(exclude_ids),
         limit=limit,
     )
+
+
+@router.post("/import")
+def import_players(
+    request: Request,
+    file: UploadFile = File(...),
+    actor: Actor = Depends(get_current_user),
+    session: Session = Depends(get_write_db),
+):
+    content = file.file.read(import_service.MAX_FILE_BYTES + 1)
+    try:
+        return import_service.import_players(
+            session,
+            actor,
+            filename=file.filename or "",
+            content=content,
+            ip=client_ip(request),
+        )
+    except ImportValidationError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(exc), "errors": exc.errors},
+        )
 
 
 @router.get("/{player_id}")

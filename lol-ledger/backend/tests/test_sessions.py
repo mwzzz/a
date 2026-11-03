@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 
 from app import db as dbmod
+from tests.conftest import close_batch
 from tests.test_players import add_money, new_player
 
 
@@ -91,7 +92,7 @@ def test_open_session_requires_open_batch(client, admin_headers) -> None:
 def test_closed_batch_rejects_session(client, admin_headers) -> None:
     batch_id = open_batch(client, admin_headers)
     pid = new_player(client, admin_headers, "关班后")["id"]
-    client.post(f"/api/v1/batches/{batch_id}/close", json={}, headers=admin_headers)
+    close_batch(client, batch_id, admin_headers)
     response = client.post(
         "/api/v1/sessions",
         json={"batch_id": batch_id, "tea_fee_cents": 200, "player_ids": [pid]},

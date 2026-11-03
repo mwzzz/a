@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.deps import Actor, client_ip, get_current_user, get_read_db, get_write_db
 from app.schemas import BatchCloseIn, BatchCreateIn
 from app.services import batches as batch_service
+from app.services import custody
 from app.services.batches import batch_row, get_open_batch
 from app.services.records import batch_ledger, export_batch_csv
 
@@ -46,11 +47,14 @@ def current_batch(
 ) -> dict:
     batch = get_open_batch(session, actor.merchant_id)
     if batch is None:
-        return {"batch": None}
+        return {"batch": None, "custody": custody.current(session, actor.merchant_id)}
     grouped = batch_service.sessions_for_batches(
         session, [batch.id], actor.merchant_id
     )
-    return {"batch": batch_row(session, batch, grouped.get(batch.id, []))}
+    return {
+        "batch": batch_row(session, batch, grouped.get(batch.id, [])),
+        "custody": custody.current(session, actor.merchant_id),
+    }
 
 
 @router.post("", status_code=201)
@@ -72,7 +76,9 @@ def get_batch(
     actor: Actor = Depends(get_current_user),
     session: Session = Depends(get_read_db),
 ) -> dict:
-    return batch_service.batch_detail(session, batch_id, actor.merchant_id)
+    payload = batch_service.batch_detail(session, batch_id, actor.merchant_id)
+    payload["custody"] = custody.current(session, actor.merchant_id)
+    return payload
 
 
 @router.get("/{batch_id}/summary")
@@ -109,7 +115,15 @@ def close_batch(
     session: Session = Depends(get_write_db),
 ) -> dict:
     batch = batch_service.close_batch(
-        session, actor, batch_id, note=payload.note, ip=client_ip(request)
+        session,
+        actor,
+        batch_id,
+        tea_to_user_id=payload.tea_to_user_id,
+        deposit_to_user_id=payload.deposit_to_user_id,
+        tea_method=payload.tea_method,
+        deposit_method=payload.deposit_method,
+        note=payload.note,
+        ip=client_ip(request),
     )
     return batch_service.snapshot_summary(batch)
 

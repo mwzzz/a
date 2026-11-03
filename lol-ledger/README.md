@@ -18,8 +18,9 @@ python -m venv ../.venv
 # source ../.venv/bin/activate && pip install -r requirements.txt   # macOS/Linux
 
 cp .env.example .env                                  # 改掉 JWT_SECRET
-../.venv/Scripts/python -m app.cli init-db            # 建表 + 默认商家
-../.venv/Scripts/python -m app.cli create-admin --username admin --merchant 默认商家
+../.venv/Scripts/python -m app.cli init-db            # 建表 + 默认商家 + 平台商家
+../.venv/Scripts/python -m app.cli create-superadmin --username admin   # 开发者账号
+../.venv/Scripts/python -m app.cli create-admin --username shop-boss --merchant 默认商家
 ../.venv/Scripts/python -m app.cli create-merchant --name "极光电竞"   # 需要多商家时
 ../.venv/Scripts/python -m uvicorn app.main:app --reload --port 8010
 
@@ -38,28 +39,70 @@ cd backend
 DB_PATH=data/dev.db python tools/seed_demo.py
 ```
 
+## 开发者账号（平台管理）
+
+开发者账号（`users.is_superadmin = 1`）只有你本人使用，挂在隐藏的「平台管理」系统商家下，不参与任何门店经营：
+
+- 登录后自动进入「平台管理」，看不到总览、场次、玩家等门店页面
+- 可以开通 / 改名 / 停用商家，可以给任意商家建管理员和店员、改角色、启停、重置密码
+- 商家管理员看不到也改不了开发者账号；开发者账号也不能在平台里改自己（改密码走右上角）
+- 每个商家至少保留一个启用的管理员，最后一个不能降级或停用
+
+首次引导（只需一次，密码交互输入；已有同名账号会被升级并迁到平台商家）：
+
+```bash
+cd /opt/lol-ledger/backend
+sudo -u lol env DB_PATH=/opt/lol-ledger/data/ledger.db \
+  /opt/lol-ledger/venv/bin/python -m app.cli create-superadmin --username admin
+```
+
+之后商家和账号都在网页里点，不用再敲命令。如果同名账号是某店唯一的管理员，命令会拒绝，先给该店补一个管理员或换个用户名。
+
+## AI 截图识别玩家
+
+「新增场次」里支持粘贴/拖入 LoL 对局截图，自动识别双方玩家名并匹配本店玩家库。识别结果只作为候选，必须点「填入玩家」才会写入场次；不会自动建房或扣茶水。
+
+配置（只放服务端，绝不提交）：
+
+```bash
+AI_ENABLED=true
+AI_API_KEY=sk-你的key
+AI_BASE_URL=https://api.deepseek.com
+AI_MODEL=deepseek-flash
+AI_TIMEOUT_SECONDS=25
+```
+
+本地写 `backend/.env`，生产写 `/opt/lol-ledger/.env` 后重启服务。`AI_ENABLED=false` 或没有 Key 时，前端显示「AI 识别未启用」，手动选人不受影响。
+
+实现要点：
+- 后端代理调用 DeepSeek，Key 不出现在前端；图片只在内存转发，不落盘。
+- 单图 ≤5MB，每用户 10 次/分钟；超时 25 秒自动降级。
+- 只有精确匹配才默认勾选；模糊匹配给候选，由人确认；未匹配可一键新建玩家。
+- AI 结果不会自动覆盖已选玩家：先填空位，空位不足时二次确认。
+
 ## 测试
 
 ```bash
 cd backend
+../.venv/Scripts/pip install -r requirements-dev.txt   # 含生成 .xls 测试文件的 xlwt
 ../.venv/Scripts/python -m pytest tests -q
 ```
 
-覆盖金额规则、事务回滚、余额恒等式、批次快照、权限、并发不丢更新，以及**跨商家越权隔离**和 v1→v2 迁移。
+覆盖金额规则、事务回滚、余额恒等式、批次快照、现金交接、操作人分红、Excel 批量导入、权限、并发不丢更新，以及**跨商家越权隔离**和 v1/v2/v3→v4 迁移。
 
 ## 目录
 
 ```
 backend/app
-├── api/         路由（auth/users/players/deposits/batches/sessions/records/overview/settings/ai）
-├── services/    业务规则（money/players/deposits/batches/sessions/records/reports/reconcile/options）
-├── models.py    SQLAlchemy 模型（含 Merchant）
-├── migrations.py 建表 DDL + v1→v2 迁移（唯一结构来源）
+├── api/         路由（auth/users/platform/players/deposits/batches/sessions/records/overview/settings/ai）
+├── services/    业务规则（money/players/deposits/batches/sessions/records/reports/reconcile/options/platform/ai）
+├── models.py    SQLAlchemy 模型（含 Merchant / User / CashHandover）
+├── migrations.py 建表 DDL + v1/v2/v3→v4 迁移（唯一结构来源）
 ├── scope.py     商家作用域助手（越权统一 404）
 ├── db.py        读写两个 engine，写事务 BEGIN IMMEDIATE
-└── cli.py       建库、建商家、建账号、重置密码
+└── cli.py       建库、建商家、建账号、引导开发者账号、重置密码
 frontend/src
-├── views/       总览、场次、玩家、记录、账本、设置
+├── views/       总览、场次、玩家、记录、账本、设置、平台管理
 ├── components/  玩家弹窗、场次弹窗、通用组件
 └── api/         接口封装与类型
 deploy/          systemd、nginx、备份、安装与上传脚本
@@ -68,14 +111,18 @@ deploy/          systemd、nginx、备份、安装与上传脚本
 ## 关键规则
 
 - 金额一律整数分存储，界面两位小数；前端字符串解析，不做浮点乘法。
-- 开局每人扣相同茶水，允许扣成负数；退押金不能超过余额。
+- 开局每人扣相同茶水，允许扣成负数；退押金不能超过余额。手动扣押已取消，历史数据并入退押金。
 - 划转两边各一条流水，共用 `transfer_group_id`；可以划成负数（前端二次确认）。
 - 押金颜色：低于 30 元红、30~60 元黄、高于 60 元绿（阈值可在设置里改）。
 - 玩家软删除，押金必须为 0，流水永久保留。
+- 玩家支持 Excel 批量导入（仅 `.xls/.xlsx`，第一列玩家 id、第二列押金）；整批校验通过才写入，不做部分导入。
 - **每个商家**同时只能有一个进行中的批次；交班后该批次不能再开局。
 - 关班时把汇总写进快照，并在同一事务里跑本商家对账，不一致直接回滚。
+- 现金有明确保管人：在库现金 = 玩家押金余额 + 本班茶水；交班时茶水上缴管理员、押金余额交给下一保管人。
+- 每个批次按建局人统计局数、人次、茶水，并按管理员设置的分红比例（默认 50%）算出分红；关班时固化比例。
 - 账号绑定唯一商家，用户名全平台唯一；玩家、批次、场次、流水、设置、导出、对账全部按商家隔离。
 - 访问别家数据一律返回 404（不暴露存在性），划转只能在同商家内进行。
+- 开发者账号是唯一的例外：只跨商家管商家和账号，不读门店经营数据，也不出现在任何门店的账号列表里。
 
 ## 部署
 

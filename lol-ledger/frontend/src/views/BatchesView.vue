@@ -4,7 +4,10 @@
       <span class="page-title">场次管理</span>
       <span class="page-sub">
         共 {{ total }} 个批次
-        <template v-if="current"> · 当前批次进行中</template>
+        <template v-if="current">
+          · 当前批次进行中 · 在库 ¥{{ formatCents(custody?.amount_cents || 0) }} · 保管人
+          {{ custody?.holder?.display_name || '未设置' }}
+        </template>
       </span>
       <div class="spacer"></div>
       <el-button v-if="!current" type="primary" :icon="VideoPlay" @click="newBatchVisible = true">
@@ -19,16 +22,18 @@
         <el-option label="进行中" value="open" />
         <el-option label="已结束" value="closed" />
       </el-select>
-      <el-input
-        v-model="keyword"
-        placeholder="搜索批次名或场次名"
-        clearable
-        style="width: 240px"
-        @keyup.enter="reload"
-        @clear="reload"
-      >
-        <template #prefix><el-icon><Search /></el-icon></template>
-      </el-input>
+      <el-date-picker
+        v-model="dateRange"
+        type="daterange"
+        value-format="YYYY-MM-DD"
+        range-separator="至"
+        start-placeholder="开班开始日期"
+        end-placeholder="结束日期"
+        :shortcuts="dateShortcuts"
+        unlink-panels
+        style="width: 280px"
+        @change="reload"
+      />
       <el-button :icon="Refresh" @click="reload">刷新</el-button>
       <div class="spacer"></div>
       <span class="muted small">点开一条场次可以看本局每个人的扣费明细</span>
@@ -40,15 +45,17 @@
           <el-icon class="chevron" :class="{ collapsed: app.isCollapsed(batch.id) }">
             <ArrowRight />
           </el-icon>
-          <span class="batch-label">{{ batch.label || `批次 #${batch.id}` }}</span>
-          <span class="batch-time">{{ batch.display_label }}</span>
+          <span class="batch-label" :title="`批次 #${batch.id}`">
+            {{ batch.label || formatBatchTime(batch) }}
+          </span>
+          <span v-if="batch.label" class="batch-time">{{ formatBatchTime(batch) }}</span>
 
           <div class="spacer"></div>
 
           <span class="stat">局数 <b>{{ batch.summary.session_count }}</b></span>
           <span class="stat">人次 <b>{{ batch.summary.player_times }}</b></span>
           <span class="stat">茶水 <b>¥{{ formatCents(batch.summary.tea_total_cents) }}</b></span>
-          <span class="stat">期末总押金 <b>¥{{ formatCents(batch.summary.deposit_total_cents) }}</b></span>
+          <span class="stat">玩家押金余额 <b>¥{{ formatCents(batch.summary.deposit_total_cents) }}</b></span>
 
           <el-button
             v-if="batch.status === 'open'"
@@ -64,6 +71,38 @@
         </header>
 
         <div v-if="!app.isCollapsed(batch.id)" class="batch-body">
+          <div class="operator-panel">
+            <div class="operator-head">
+              <span>操作人统计</span>
+              <span class="muted small">分红比例 {{ batch.dividend_rate_percent }}% · 只算茶水</span>
+            </div>
+            <div v-if="batch.operators.length" class="operator-table">
+              <div class="operator-row operator-title">
+                <span>操作人</span>
+                <span>局数</span>
+                <span>人次</span>
+                <span>茶水</span>
+                <span>分红</span>
+              </div>
+              <div v-for="op in batch.operators" :key="op.user?.id || 'unknown'" class="operator-row">
+                <span class="operator-name">{{ op.user?.display_name || '未知' }}</span>
+                <span class="mono">{{ op.session_count }}</span>
+                <span class="mono">{{ op.player_times }}</span>
+                <span class="mono">¥{{ formatCents(op.tea_cents) }}</span>
+                <span class="mono operator-div">¥{{ formatCents(op.dividend_cents) }}</span>
+              </div>
+            </div>
+            <div v-else class="muted small operator-empty">这个批次还没有场次</div>
+          </div>
+
+          <div v-if="batch.handover" class="handover">
+            <span class="muted">交班交接：</span>
+            茶水 ¥{{ formatCents(batch.handover.tea_cents) }} 上缴
+            {{ batch.handover.tea_to?.display_name || '-' }}（{{ batch.handover.tea_method_label }}）；
+            押金 ¥{{ formatCents(batch.handover.deposit_cents) }} 交给
+            {{ batch.handover.deposit_to?.display_name || '-' }}（{{ batch.handover.deposit_method_label }}）
+          </div>
+
           <div v-if="batch.sessions.length" class="session-head">
             <span>场次名称</span>
             <span>时间</span>
@@ -133,17 +172,18 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowRight, Plus, Refresh, Search, VideoPlay } from '@element-plus/icons-vue'
+import { ArrowRight, Plus, Refresh, VideoPlay } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { batchApi, downloadBatchCsv, settingsApi } from '@/api'
-import type { BatchRow } from '@/api/types'
+import type { BatchRow, CustodyInfo } from '@/api/types'
 import CloseBatchDialog from '@/components/batches/CloseBatchDialog.vue'
 import NewBatchDialog from '@/components/batches/NewBatchDialog.vue'
 import NewSessionDialog from '@/components/batches/NewSessionDialog.vue'
 import { useAppStore } from '@/stores/app'
+import { formatBatchTime } from '@/utils/batch'
 import { formatShort } from '@/utils/datetime'
 import { formatCents } from '@/utils/money'
 
@@ -156,10 +196,45 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 const status = ref('all')
-const keyword = ref('')
+const dateRange = ref<[string, string] | null>(null)
 const loading = ref(false)
 const current = ref<BatchRow | null>(null)
+const custody = ref<CustodyInfo | null>(null)
 const teaCents = ref(200)
+
+const dateShortcuts = [
+  {
+    text: '今天',
+    value: () => {
+      const today = new Date()
+      return [today, today]
+    },
+  },
+  {
+    text: '昨天',
+    value: () => {
+      const end = new Date()
+      end.setDate(end.getDate() - 1)
+      return [new Date(end), end]
+    },
+  },
+  {
+    text: '近 7 天',
+    value: () => {
+      const end = new Date()
+      const start = new Date()
+      start.setDate(start.getDate() - 6)
+      return [start, end]
+    },
+  },
+  {
+    text: '本月',
+    value: () => {
+      const end = new Date()
+      return [new Date(end.getFullYear(), end.getMonth(), 1), end]
+    },
+  },
+]
 
 const expanded = ref(new Set<number>())
 
@@ -173,19 +248,17 @@ async function load() {
   try {
     const data = await batchApi.list({
       status: status.value,
-      keyword: keyword.value.trim(),
+      date_from: dateRange.value?.[0],
+      date_to: dateRange.value?.[1],
       page: page.value,
       page_size: pageSize.value,
       include_sessions: true,
     })
     batches.value = data.items
     total.value = data.total
-    const openBatch = data.items.find((item) => item.status === 'open')
-    current.value = openBatch || null
-    if (!current.value) {
-      const payload = await batchApi.current()
-      current.value = payload.batch
-    }
+    const payload = await batchApi.current()
+    current.value = payload.batch
+    custody.value = payload.custody
   } finally {
     loading.value = false
   }
@@ -348,6 +421,73 @@ onMounted(async () => {
 
 .batch-body {
   padding: 4px 14px 12px;
+}
+
+.operator-panel {
+  margin: 8px 0 10px;
+  padding: 10px 12px;
+  background: #101319;
+  border: 1px solid #1c2028;
+  border-radius: 8px;
+}
+
+.operator-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 7px;
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+}
+
+.operator-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.operator-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 1.4fr) 60px 60px 100px 100px;
+  gap: 10px;
+  padding: 5px 6px;
+  font-size: 12.5px;
+  border-radius: 5px;
+}
+
+.operator-row:not(.operator-title):nth-child(even) {
+  background: #141821;
+}
+
+.operator-title {
+  color: var(--el-text-color-secondary);
+  font-size: 11.5px;
+}
+
+.operator-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operator-div {
+  color: var(--el-color-warning);
+}
+
+.operator-empty {
+  padding: 4px 6px;
+}
+
+.handover {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--el-color-success);
+  background: rgba(62, 207, 142, 0.06);
+  border-radius: 0 6px 6px 0;
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+  line-height: 1.7;
 }
 
 .session-head {

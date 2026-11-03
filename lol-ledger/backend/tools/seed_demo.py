@@ -113,7 +113,7 @@ def main() -> int:
             )
 
         deposits.transfer(session, actor, created[0], created[7], 600, "帮朋友垫一局")
-        deposits.manual_deduct(session, actor, created[9], 300, "迟到罚款")
+        deposits.refund(session, actor, created[9], 300, "退押金")
 
         print(f"演示数据完成：{len(created)} 个玩家，批次 #{batch.id}，{len(TEAMS)} 局")
     return 0

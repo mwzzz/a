@@ -1,4 +1,4 @@
-"""加押金、退押金、手动扣押、划转。所有金额变动都走 apply_delta。
+"""加押金、退押金、划转。所有金额变动都走 apply_delta。
 
 每一次读写都带 merchant_id：别家的玩家与批次在这里一律当作不存在。
 """
@@ -158,38 +158,6 @@ def refund(
         actor=actor,
         player_id=player_id,
         reason="refund",
-        amount_cents=amount_cents,
-        before=before,
-        after=after,
-        batch_id=current_batch_id(session, merchant_id),
-        note=clean,
-    )
-    return {
-        "entry": entry_payload(session, entry),
-        "player": _player_payload(session, player_id, merchant_id),
-    }
-
-
-def manual_deduct(
-    session: Session,
-    actor: Actor,
-    player_id: int,
-    amount_cents: int,
-    note: str = "",
-) -> dict:
-    if amount_cents < 0:
-        raise AppError("扣押金额不能为负")
-    merchant_id = actor.merchant_id
-    get_player(session, player_id, merchant_id)
-    clean = clean_text(note, "备注", 200)
-    before, after = apply_delta(
-        session, player_id, -int(amount_cents), merchant_id=merchant_id
-    )
-    entry = _write_entry(
-        session,
-        actor=actor,
-        player_id=player_id,
-        reason="manual_deduct",
         amount_cents=amount_cents,
         before=before,
         after=after,

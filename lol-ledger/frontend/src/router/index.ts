@@ -26,6 +26,12 @@ const router = createRouter({
           name: 'settings',
           component: () => import('@/views/SettingsView.vue'),
         },
+        {
+          path: 'platform',
+          name: 'platform',
+          component: () => import('@/views/PlatformView.vue'),
+          meta: { requiresSuperadmin: true },
+        },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },
@@ -37,7 +43,7 @@ router.beforeEach(async (to) => {
 
   if (to.meta.public) {
     if (auth.isLoggedIn && to.name === 'login') {
-      return { name: 'overview' }
+      return { name: auth.isSuperadmin ? 'platform' : 'overview' }
     }
     return true
   }
@@ -53,6 +59,16 @@ router.beforeEach(async (to) => {
       auth.reset()
       return { name: 'login', query: { redirect: to.fullPath } }
     }
+  }
+
+  // 开发者只管商家与账号，不进入门店业务页面
+  if (auth.isSuperadmin && to.name !== 'platform') {
+    return { name: 'platform' }
+  }
+
+  if (to.meta.requiresSuperadmin && !auth.isSuperadmin) {
+    ElMessage.warning('只有开发者账号可以打开这个页面')
+    return { name: 'overview' }
   }
 
   if (to.meta.requiresAdmin && !auth.isAdmin) {

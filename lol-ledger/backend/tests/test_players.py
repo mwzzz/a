@@ -23,15 +23,6 @@ def add_money(client, headers, player_id: int, cents: int) -> None:
     assert response.status_code == 201, response.text
 
 
-def deduct_money(client, headers, player_id: int, cents: int) -> None:
-    response = client.post(
-        f"/api/v1/players/{player_id}/deductions",
-        json={"amount_cents": cents},
-        headers=headers,
-    )
-    assert response.status_code == 201, response.text
-
-
 def test_create_player_defaults(client, admin_headers, admin) -> None:
     body = new_player(client, admin_headers, "等风息y", account="ceb1", remark="老客")
     assert body["deposit_cents"] == 0
@@ -95,13 +86,18 @@ def test_filter_by_deposit_level(client, admin_headers) -> None:
         ("sixty", 6000, "warn"),
         ("over", 6001, "safe"),
     ]
+    batch_id = None
     for name, cents, _ in cases:
         player = new_player(client, admin_headers, name)
         if cents >= 0:
             add_money(client, admin_headers, player["id"], cents)
         else:
+            from tests.test_sessions import create_session, open_batch
+
+            if batch_id is None:
+                batch_id = open_batch(client, admin_headers)
             add_money(client, admin_headers, player["id"], 100)
-            deduct_money(client, admin_headers, player["id"], 101)
+            create_session(client, admin_headers, batch_id, [player["id"]], tea=101)
 
     for name, _, level in cases:
         body = client.get(
@@ -156,7 +152,11 @@ def test_staff_cannot_delete_player(client, admin_headers, staff_headers) -> Non
 def test_deleted_player_ledger_preserved_and_name_reusable(client, admin_headers) -> None:
     player = new_player(client, admin_headers, "循环名")
     add_money(client, admin_headers, player["id"], 500)
-    deduct_money(client, admin_headers, player["id"], 500)
+    client.post(
+        f"/api/v1/players/{player['id']}/refunds",
+        json={"amount_cents": 500},
+        headers=admin_headers,
+    )
     assert client.delete(f"/api/v1/players/{player['id']}", headers=admin_headers).status_code == 204
 
     with dbmod.read_session() as session:
@@ -183,7 +183,11 @@ def test_player_options_excludes_selected(client, admin_headers) -> None:
 def test_player_detail_totals(client, admin_headers) -> None:
     player = new_player(client, admin_headers, "统计哥")
     add_money(client, admin_headers, player["id"], 3000)
-    deduct_money(client, admin_headers, player["id"], 1200)
+    client.post(
+        f"/api/v1/players/{player['id']}/refunds",
+        json={"amount_cents": 1200},
+        headers=admin_headers,
+    )
     detail = client.get(f"/api/v1/players/{player['id']}", headers=admin_headers).json()
     assert detail["total_in_cents"] == 3000
     assert detail["total_out_cents"] == 1200

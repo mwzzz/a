@@ -33,6 +33,7 @@ def update_settings(
         last_tea_cents=payload.last_tea_cents,
         deposit_low_cents=payload.deposit_low_cents,
         deposit_high_cents=payload.deposit_high_cents,
+        dividend_rate_percent=payload.dividend_rate_percent,
         shop_name=payload.shop_name,
         ip=client_ip(request),
     )

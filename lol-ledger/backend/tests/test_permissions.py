@@ -35,12 +35,6 @@ def test_staff_can_do_money_operations(client, admin_headers, staff_headers) -> 
         json={"amount_cents": 200},
         headers=staff_headers,
     ).status_code == 201
-    assert client.post(
-        f"/api/v1/players/{pid}/deductions",
-        json={"amount_cents": 100},
-        headers=staff_headers,
-    ).status_code == 201
-
     other = new_player(client, admin_headers, "店员划转目标")
     assert client.post(
         "/api/v1/transfers",

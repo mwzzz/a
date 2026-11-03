@@ -92,7 +92,6 @@ def test_signed_amount_by_reason(client, admin_headers) -> None:
     pid = player["id"]
     add_money(client, admin_headers, pid, 5000)
     create_session(client, admin_headers, batch_id, [pid], tea=200)
-    client.post(f"/api/v1/players/{pid}/deductions", json={"amount_cents": 100}, headers=admin_headers)
     client.post(f"/api/v1/players/{pid}/refunds", json={"amount_cents": 200}, headers=admin_headers)
     client.post(
         "/api/v1/transfers",
@@ -105,7 +104,6 @@ def test_signed_amount_by_reason(client, admin_headers) -> None:
     ).json()["items"]
     signs = {item["reason"]: item["signed_amount_cents"] for item in items}
     assert signs["normal_deduct"] == -200
-    assert signs["manual_deduct"] == -100
     assert signs["refund"] == -200
     assert signs["transfer_out"] == -300
     assert signs["add_deposit"] == 5000
@@ -167,10 +165,12 @@ def test_overview_shape(client, admin_headers) -> None:
     assert body["total_deposit_cents"] == 1000
     assert body["low_deposit_count"] == 1
     assert len(body["recent_records"]) == 1
-    assert "today" in body
+    assert "today" not in body
+    assert body["custody"]["amount_cents"] == 1000
+    assert body["custody"]["tea_cents"] == 0
 
 
-def test_ai_endpoint_returns_501(client, admin_headers) -> None:
-    response = client.post("/api/v1/ai/recognize-players", headers=admin_headers)
-    assert response.status_code == 501
-    assert "即将上线" in response.json()["detail"]
+def test_ai_status_shape(client, admin_headers) -> None:
+    status = client.get("/api/v1/ai/status", headers=admin_headers).json()
+    assert isinstance(status["enabled"], bool)
+    assert isinstance(status["model"], str)

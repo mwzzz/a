@@ -1,11 +1,12 @@
 <template>
   <header class="topbar">
-    <div class="brand" @click="router.push('/')">
+    <div class="brand" @click="router.push(auth.isSuperadmin ? '/platform' : '/')">
       <span class="brand-mark">L</span>
       <span class="brand-name">LOL 记录管理</span>
     </div>
 
-    <span v-if="auth.merchantName" class="merchant-tag">{{ auth.merchantName }}</span>
+    <span v-if="auth.isSuperadmin" class="dev-tag">开发者</span>
+    <span v-else-if="auth.merchantName" class="merchant-tag">{{ auth.merchantName }}</span>
 
     <nav class="nav">
       <router-link
@@ -22,6 +23,7 @@
     <div class="spacer"></div>
 
     <el-input
+      v-if="!auth.isSuperadmin"
       v-model="keyword"
       class="search"
       placeholder="搜索玩家或场次"
@@ -56,7 +58,7 @@
       </el-button>
     </el-tooltip>
 
-    <el-dropdown trigger="click" @command="onCreate">
+    <el-dropdown v-if="!auth.isSuperadmin" trigger="click" @command="onCreate">
       <el-button type="primary" :icon="Plus">新增</el-button>
       <template #dropdown>
         <el-dropdown-menu>
@@ -90,7 +92,7 @@
 <script setup lang="ts">
 import { ArrowDown, Moon, Plus, Search, Sunny } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { authApi } from '@/api'
@@ -101,14 +103,18 @@ const router = useRouter()
 const auth = useAuthStore()
 const app = useAppStore()
 
-const navs = [
-  { name: 'overview', label: '总览' },
-  { name: 'batches', label: '场次' },
-  { name: 'players', label: '玩家' },
-  { name: 'records', label: '记录' },
-  { name: 'ledger', label: '账本' },
-  { name: 'settings', label: '设置' },
-]
+const navs = computed(() =>
+  auth.isSuperadmin
+    ? [{ name: 'platform', label: '商家与账号' }]
+    : [
+        { name: 'overview', label: '总览' },
+        { name: 'batches', label: '场次' },
+        { name: 'players', label: '玩家' },
+        { name: 'records', label: '记录' },
+        { name: 'ledger', label: '账本' },
+        { name: 'settings', label: '设置' },
+      ],
+)
 
 const keyword = ref('')
 const pwdVisible = ref(false)
@@ -212,6 +218,19 @@ async function submitPassword() {
   background: rgba(64, 158, 255, 0.12);
   border: 1px solid rgba(64, 158, 255, 0.35);
   color: #7ec1ff;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.dev-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: rgba(230, 162, 60, 0.12);
+  border: 1px solid rgba(230, 162, 60, 0.4);
+  color: #e6a23c;
   font-size: 12px;
   white-space: nowrap;
 }

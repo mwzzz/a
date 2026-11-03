@@ -1,4 +1,4 @@
-"""押金操作接口：加、退、扣、划。"""
+"""押金操作接口：加、退、划。"""
 
 from __future__ import annotations
 
@@ -32,18 +32,6 @@ def refund(
     session: Session = Depends(get_write_db),
 ) -> dict:
     return deposit_service.refund(
-        session, actor, player_id, payload.amount_cents, payload.note
-    )
-
-
-@router.post("/players/{player_id}/deductions", status_code=201)
-def deduct(
-    player_id: int,
-    payload: AmountIn,
-    actor: Actor = Depends(get_current_user),
-    session: Session = Depends(get_write_db),
-) -> dict:
-    return deposit_service.manual_deduct(
         session, actor, player_id, payload.amount_cents, payload.note
     )
 

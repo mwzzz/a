@@ -26,10 +26,12 @@ class Actor:
     role: str
     merchant_id: int
     merchant_name: str
+    is_superadmin: bool = False
 
     @property
     def is_admin(self) -> bool:
-        return self.role == "admin"
+        """门店管理员。开发者账号虽然 role 也是 admin，但不参与门店经营。"""
+        return self.role == "admin" and not self.is_superadmin
 
     @property
     def name(self) -> str:
@@ -95,10 +97,17 @@ def get_current_user(
         role=user.role,
         merchant_id=merchant.id,
         merchant_name=merchant.name,
+        is_superadmin=bool(user.is_superadmin),
     )
 
 
 def require_admin(actor: Actor = Depends(get_current_user)) -> Actor:
     if not actor.is_admin:
         raise ForbiddenError("只有管理员可以操作")
+    return actor
+
+
+def require_superadmin(actor: Actor = Depends(get_current_user)) -> Actor:
+    if not actor.is_superadmin:
+        raise ForbiddenError("只有开发者账号可以操作")
     return actor

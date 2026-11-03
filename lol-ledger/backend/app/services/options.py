@@ -18,6 +18,7 @@ DEFAULTS = {
     "last_tea_cents": 200,
     "deposit_low_cents": 3000,
     "deposit_high_cents": 6000,
+    "dividend_rate_percent": 50,
 }
 
 
@@ -56,6 +57,11 @@ def last_tea_cents(session: Session, merchant_id: int) -> int:
     return value if value >= 0 else int(DEFAULTS["last_tea_cents"])
 
 
+def dividend_rate(session: Session, merchant_id: int) -> int:
+    value = get_int(session, merchant_id, "dividend_rate_percent")
+    return min(100, max(0, value))
+
+
 def snapshot(session: Session, merchant_id: int) -> dict:
     merchant = get_merchant(session, merchant_id)
     low, high = thresholds(session, merchant_id)
@@ -63,6 +69,7 @@ def snapshot(session: Session, merchant_id: int) -> dict:
         "last_tea_cents": last_tea_cents(session, merchant_id),
         "deposit_low_cents": low,
         "deposit_high_cents": high,
+        "dividend_rate_percent": dividend_rate(session, merchant_id),
         "shop_name": merchant.name,
     }
 
@@ -100,6 +107,7 @@ def update(
     last_tea_cents: int | None = None,
     deposit_low_cents: int | None = None,
     deposit_high_cents: int | None = None,
+    dividend_rate_percent: int | None = None,
     shop_name: str | None = None,
     ip: str = "",
 ) -> dict:
@@ -122,6 +130,10 @@ def update(
         if deposit_high_cents < 0:
             raise AppError("押金阈值不能为负")
         updates["deposit_high_cents"] = str(int(deposit_high_cents))
+    if dividend_rate_percent is not None:
+        if dividend_rate_percent < 0 or dividend_rate_percent > 100:
+            raise AppError("分红比例要在 0~100 之间")
+        updates["dividend_rate_percent"] = str(int(dividend_rate_percent))
 
     if "deposit_low_cents" in updates or "deposit_high_cents" in updates:
         current = snapshot(session, merchant_id)

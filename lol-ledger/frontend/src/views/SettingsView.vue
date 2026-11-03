@@ -30,6 +30,15 @@
                 <template #suffix>高于这个数显示绿色</template>
               </el-input>
             </el-form-item>
+            <el-form-item label="分红比例">
+              <el-input
+                v-model="form.dividend_rate"
+                :disabled="!auth.isAdmin"
+                autocomplete="off"
+              >
+                <template #suffix>% · 按操作人茶水计算</template>
+              </el-input>
+            </el-form-item>
             <el-form-item>
               <el-button v-if="auth.isAdmin" type="primary" :loading="saving" @click="saveSettings">
                 保存设置
@@ -102,6 +111,47 @@
           </el-table>
         </div>
       </el-tab-pane>
+
+      <el-tab-pane v-if="auth.isAdmin" label="数据自检" name="check">
+        <div class="panel check-panel">
+          <div class="check-head">
+            <div>
+              <div class="check-title">数据自检</div>
+              <div class="muted small">
+                校验「玩家押金余额 = 流水合计 = 最后一条余额」。正常营业不用跑，只有手工改过数据库、恢复备份或怀疑数据异常时才需要。
+              </div>
+            </div>
+            <div class="spacer"></div>
+            <el-button type="primary" :loading="checking" @click="runCheck">
+              立即自检
+            </el-button>
+          </div>
+
+          <div v-if="report" class="check-report" :class="report.ok ? 'ok' : 'bad'">
+            <div class="check-line">
+              <el-icon><CircleCheck v-if="report.ok" /><Warning v-else /></el-icon>
+              <span v-if="report.ok">
+                数据一致，共检查 {{ report.checked }} 个玩家，押金合计 ¥{{ formatCents(report.total_deposit_cents) }}
+              </span>
+              <span v-else>
+                发现 {{ report.problems.length }} 个异常，请立即检查
+              </span>
+            </div>
+            <el-table v-if="!report.ok" :data="report.problems" size="small">
+              <el-table-column prop="game_id" label="玩家" min-width="140" />
+              <el-table-column label="记录的押金" width="130" align="right">
+                <template #default="{ row }">¥{{ formatCents(row.stored_cents) }}</template>
+              </el-table-column>
+              <el-table-column label="流水合计" width="130" align="right">
+                <template #default="{ row }">¥{{ formatCents(row.ledger_sum_cents) }}</template>
+              </el-table-column>
+              <el-table-column label="最后余额" width="130" align="right">
+                <template #default="{ row }">¥{{ formatCents(row.last_balance_cents) }}</template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </div>
+      </el-tab-pane>
     </el-tabs>
 
     <el-dialog v-model="accountVisible" title="新增账号" width="420px" :close-on-click-modal="false">
@@ -141,12 +191,12 @@
 </template>
 
 <script setup lang="ts">
-import { Plus, Refresh } from '@element-plus/icons-vue'
+import { CircleCheck, Plus, Refresh, Warning } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { onMounted, reactive, ref, watch } from 'vue'
 
-import { accountApi, settingsApi } from '@/api'
-import type { AccountRow } from '@/api/types'
+import { accountApi, overviewApi, settingsApi } from '@/api'
+import type { AccountRow, ReconcilePayload } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { formatShort } from '@/utils/datetime'
 import { formatCents, parseYuan } from '@/utils/money'
@@ -154,7 +204,13 @@ import { formatCents, parseYuan } from '@/utils/money'
 const auth = useAuthStore()
 
 const tab = ref('basic')
-const form = reactive({ shop_name: '', last_tea: '', low: '', high: '' })
+const form = reactive({
+  shop_name: '',
+  last_tea: '',
+  low: '',
+  high: '',
+  dividend_rate: '50',
+})
 const saving = ref(false)
 
 const accounts = ref<AccountRow[]>([])
@@ -171,12 +227,16 @@ const resetTarget = ref<AccountRow | null>(null)
 const resetPassword = ref('')
 const resetSaving = ref(false)
 
+const checking = ref(false)
+const report = ref<ReconcilePayload | null>(null)
+
 async function loadSettings() {
   const data = await settingsApi.get()
   form.shop_name = data.shop_name
   form.last_tea = formatCents(data.last_tea_cents)
   form.low = formatCents(data.deposit_low_cents)
   form.high = formatCents(data.deposit_high_cents)
+  form.dividend_rate = String(data.dividend_rate_percent)
 }
 
 async function saveSettings() {
@@ -191,6 +251,11 @@ async function saveSettings() {
     ElMessage.warning('押金充足线必须大于不足线')
     return
   }
+  const rate = Number(form.dividend_rate)
+  if (!Number.isInteger(rate) || rate < 0 || rate > 100) {
+    ElMessage.warning('分红比例要填 0~100 的整数')
+    return
+  }
   saving.value = true
   try {
     await settingsApi.update({
@@ -198,11 +263,21 @@ async function saveSettings() {
       last_tea_cents: tea,
       deposit_low_cents: low,
       deposit_high_cents: high,
+      dividend_rate_percent: rate,
     })
     ElMessage.success('设置已保存')
     await loadSettings()
   } finally {
     saving.value = false
+  }
+}
+
+async function runCheck() {
+  checking.value = true
+  try {
+    report.value = await overviewApi.reconcile()
+  } finally {
+    checking.value = false
   }
 }
 
@@ -324,5 +399,50 @@ onMounted(async () => {
   margin-bottom: 12px;
   font-size: 13px;
   color: var(--el-text-color-regular);
+}
+
+.check-panel {
+  padding: 16px 18px;
+}
+
+.check-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.check-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.check-report {
+  margin-top: 14px;
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 12.5px;
+}
+
+.check-report.ok {
+  background: rgba(62, 207, 142, 0.08);
+  border: 1px solid rgba(62, 207, 142, 0.25);
+  color: #8fe3bb;
+}
+
+.check-report.bad {
+  background: rgba(255, 92, 92, 0.08);
+  border: 1px solid rgba(255, 92, 92, 0.3);
+  color: #ffb3b3;
+}
+
+.check-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.check-report.bad .el-table {
+  margin-top: 10px;
 }
 </style>

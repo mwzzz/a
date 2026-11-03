@@ -4,6 +4,7 @@
       <span class="page-title">玩家</span>
       <span class="page-sub">共 {{ total }} 人 · 总押金 ¥{{ formatCents(totalDeposit) }}</span>
       <div class="spacer"></div>
+      <el-button :icon="Upload" @click="importVisible = true">批量导入</el-button>
       <el-button type="primary" :icon="Plus" @click="openCreate">新增玩家</el-button>
     </div>
 
@@ -84,7 +85,7 @@
             <div class="ops">
               <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
               <el-button link type="primary" @click="openDeposit(row, 'add')">加押金</el-button>
-              <el-button link type="warning" @click="openDeposit(row, 'deduct')">扣押金</el-button>
+              <el-button link type="warning" @click="openDeposit(row, 'refund')">退押金</el-button>
               <el-button link type="primary" @click="openTransfer(row)">划押</el-button>
               <el-button v-if="auth.isAdmin" link type="danger" @click="remove(row)">删除</el-button>
             </div>
@@ -108,6 +109,7 @@
     </div>
 
     <PlayerFormDialog v-model="formVisible" :player="editing" @saved="onSaved" />
+    <PlayerImportDialog v-model="importVisible" @saved="onSaved" />
     <DepositDialog
       v-model="depositVisible"
       :player="active"
@@ -125,7 +127,7 @@
 </template>
 
 <script setup lang="ts">
-import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Plus, Refresh, Search, Upload } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -135,6 +137,7 @@ import type { PlayerRow } from '@/api/types'
 import DepositBadge from '@/components/common/DepositBadge.vue'
 import DepositDialog from '@/components/players/DepositDialog.vue'
 import PlayerFormDialog from '@/components/players/PlayerFormDialog.vue'
+import PlayerImportDialog from '@/components/players/PlayerImportDialog.vue'
 import PlayerLedgerDrawer from '@/components/players/PlayerLedgerDrawer.vue'
 import TransferDialog from '@/components/players/TransferDialog.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -160,12 +163,13 @@ const highCents = ref(6000)
 const lastTeaCents = ref(200)
 
 const formVisible = ref(false)
+const importVisible = ref(false)
 const depositVisible = ref(false)
 const transferVisible = ref(false)
 const ledgerVisible = ref(false)
 const editing = ref<PlayerRow | null>(null)
 const active = ref<PlayerRow | null>(null)
-const depositMode = ref<'add' | 'refund' | 'deduct'>('add')
+const depositMode = ref<'add' | 'refund'>('add')
 
 const defaultTransferCents = computed(() => lastTeaCents.value * 10)
 
@@ -214,7 +218,7 @@ function openEdit(row: PlayerRow) {
   formVisible.value = true
 }
 
-function openDeposit(row: PlayerRow, mode: 'add' | 'refund' | 'deduct') {
+function openDeposit(row: PlayerRow, mode: 'add' | 'refund') {
   active.value = row
   depositMode.value = mode
   depositVisible.value = true

@@ -17,6 +17,8 @@ class Merchant(Base):
     name: Mapped[str] = mapped_column(String(64))
     note: Mapped[str] = mapped_column(String(200), default="")
     status: Mapped[str] = mapped_column(String(16), default="active")
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False)
+    custodian_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[str] = mapped_column(String(40))
     updated_at: Mapped[str] = mapped_column(String(40))
 
@@ -35,6 +37,7 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(String(64), default="")
     role: Mapped[str] = mapped_column(String(16))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_superadmin: Mapped[bool] = mapped_column(Boolean, default=False)
     password_changed_at: Mapped[str] = mapped_column(String(40))
     last_login_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     created_at: Mapped[str] = mapped_column(String(40))
@@ -87,6 +90,7 @@ class Batch(Base):
     transfer_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     net_change_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     deposit_total_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dividend_rate_percent: Mapped[int | None] = mapped_column(Integer, default=50)
 
     opener: Mapped[User | None] = relationship(User, foreign_keys=[opened_by], lazy="joined")
     closer: Mapped[User | None] = relationship(User, foreign_keys=[closed_by], lazy="joined")
@@ -143,6 +147,36 @@ class LedgerEntry(Base):
     operator_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     note: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[str] = mapped_column(String(40))
+
+
+class CashHandover(Base):
+    """交班时的现金拆分：茶水营业款上缴管理员，押金余额交给下一保管人。"""
+
+    __tablename__ = "cash_handovers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    merchant_id: Mapped[int] = mapped_column(ForeignKey("merchants.id"))
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"))
+    from_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    deposit_to_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    tea_to_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    deposit_cents: Mapped[int] = mapped_column(Integer, default=0)
+    tea_cents: Mapped[int] = mapped_column(Integer, default=0)
+    deposit_method: Mapped[str] = mapped_column(String(16), default="wechat")
+    tea_method: Mapped[str] = mapped_column(String(16), default="wechat")
+    note: Mapped[str] = mapped_column(String(200), default="")
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[str] = mapped_column(String(40))
+
+    from_user: Mapped[User | None] = relationship(
+        User, foreign_keys=[from_user_id], lazy="joined"
+    )
+    deposit_to: Mapped[User | None] = relationship(
+        User, foreign_keys=[deposit_to_user_id], lazy="joined"
+    )
+    tea_to: Mapped[User | None] = relationship(
+        User, foreign_keys=[tea_to_user_id], lazy="joined"
+    )
 
 
 class MerchantSetting(Base):

@@ -1,4 +1,4 @@
-"""押金规则：加、退、扣、划，以及事务回滚与余额恒等式。"""
+"""押金规则：加、退、划，以及事务回滚与余额恒等式。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app import db as dbmod
 from tests.test_players import add_money, new_player
+from tests.test_sessions import create_session, open_batch
 
 
 def balance(client, headers, player_id: int) -> int:
@@ -63,12 +64,8 @@ def test_refund_insufficient_rolls_back(client, admin_headers) -> None:
 def test_negative_account_cannot_refund(client, admin_headers) -> None:
     player = new_player(client, admin_headers, "负翁")
     add_money(client, admin_headers, player["id"], 100)
-    response = client.post(
-        f"/api/v1/players/{player['id']}/deductions",
-        json={"amount_cents": 300},
-        headers=admin_headers,
-    )
-    assert response.status_code == 201
+    batch_id = open_batch(client, admin_headers)
+    create_session(client, admin_headers, batch_id, [player["id"]], tea=300)
     assert balance(client, admin_headers, player["id"]) == -200
 
     refund = client.post(
@@ -92,29 +89,14 @@ def test_refund_exact_balance_ok(client, admin_headers) -> None:
     assert response.json()["entry"]["signed_amount_cents"] == -1234
 
 
-def test_manual_deduct_may_go_negative(client, admin_headers) -> None:
-    player = new_player(client, admin_headers, "罚款哥")
-    add_money(client, admin_headers, player["id"], 100)
-    body = client.post(
-        f"/api/v1/players/{player['id']}/deductions",
-        json={"amount_cents": 300},
-        headers=admin_headers,
-    ).json()
-    assert body["entry"]["reason"] == "manual_deduct"
-    assert body["entry"]["reason_label"] == "手动扣押"
-    assert body["player"]["deposit_cents"] == -200
-    assert body["player"]["deposit_level"] == "low"
-
-
-def test_manual_deduct_zero_allowed(client, admin_headers) -> None:
-    player = new_player(client, admin_headers, "零扣")
+def test_manual_deduct_endpoint_removed(client, admin_headers) -> None:
+    player = new_player(client, admin_headers, "旧接口")
     response = client.post(
         f"/api/v1/players/{player['id']}/deductions",
-        json={"amount_cents": 0},
+        json={"amount_cents": 100},
         headers=admin_headers,
     )
-    assert response.status_code == 201
-    assert response.json()["entry"]["amount_cents"] == 0
+    assert response.status_code == 404
 
 
 def test_transfer_creates_pair_with_same_group(client, admin_headers) -> None:

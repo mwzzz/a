@@ -17,8 +17,20 @@ export interface AuthUser {
   display_name: string
   role: 'admin' | 'staff'
   is_admin?: boolean
+  is_superadmin?: boolean
   merchant_id?: number
   merchant?: { id: number; name: string }
+}
+
+export interface PlatformMerchantRow {
+  id: number
+  name: string
+  note: string
+  status: 'active' | 'disabled'
+  user_count: number
+  player_count: number
+  created_at: string
+  updated_at: string
 }
 
 export interface PlayerRow {
@@ -43,6 +55,49 @@ export interface PlayerOption {
   game_id: string
   account: string
   deposit_cents: number
+}
+
+export interface PlayerImportResult {
+  created: number
+  deposited_cents: number
+}
+
+export interface PlayerImportError {
+  row: number
+  message: string
+}
+
+export interface AiPlayerRef {
+  id: number
+  game_id: string
+  account: string
+  deposit_cents: number
+}
+
+export interface AiCandidate {
+  player: AiPlayerRef
+  score: number
+}
+
+export interface AiPlayerItem {
+  raw_name: string
+  status: 'matched' | 'ambiguous' | 'unmatched'
+  confidence: number | null
+  team: number | null
+  matched_player: AiPlayerRef | null
+  candidates: AiCandidate[]
+}
+
+export interface AiRecognizePayload {
+  items: AiPlayerItem[]
+  count: number
+  warnings: string[]
+  elapsed_ms: number
+}
+
+export interface AiStatus {
+  enabled: boolean
+  model: string
 }
 
 export interface LedgerEntryRow {
@@ -95,12 +150,52 @@ export interface BatchSummary {
   tea_total_cents: number
   add_total_cents: number
   refund_total_cents: number
-  deduct_total_cents: number
   transfer_out_total_cents: number
   transfer_count: number
   net_change_cents: number
   deposit_total_cents: number
   opening_total_cents: number
+}
+
+export type HandoverMethod = 'wechat' | 'alipay' | 'cash' | 'bank' | 'other'
+
+export interface OperatorStat {
+  user: UserBrief | null
+  session_count: number
+  player_times: number
+  tea_cents: number
+  dividend_cents: number
+}
+
+export interface HandoverInfo {
+  id: number
+  from: UserBrief | null
+  deposit_to: UserBrief | null
+  tea_to: UserBrief | null
+  deposit_cents: number
+  tea_cents: number
+  deposit_method: HandoverMethod
+  deposit_method_label: string
+  tea_method: HandoverMethod
+  tea_method_label: string
+  note: string
+  created_at: string
+}
+
+export interface CustodyInfo {
+  holder: UserBrief | null
+  holder_id: number | null
+  amount_cents: number
+  deposit_cents: number
+  tea_cents: number
+  batch_id: number | null
+}
+
+export interface UserOption {
+  id: number
+  username: string
+  display_name: string
+  role: 'admin' | 'staff'
 }
 
 export interface BatchRow {
@@ -116,6 +211,9 @@ export interface BatchRow {
   session_count: number
   player_times: number
   summary: BatchSummary
+  dividend_rate_percent: number
+  operators: OperatorStat[]
+  handover: HandoverInfo | null
   sessions: SessionRow[]
 }
 
@@ -123,6 +221,7 @@ export interface SettingsPayload {
   last_tea_cents: number
   deposit_low_cents: number
   deposit_high_cents: number
+  dividend_rate_percent: number
   shop_name: string
 }
 
@@ -132,21 +231,14 @@ export interface OverviewPayload {
   low_deposit_count: number
   deposit_low_cents: number
   deposit_high_cents: number
-  today: {
-    session_count: number
-    player_times: number
-    tea_total_cents: number
-    add_total_cents: number
-    refund_total_cents: number
-    deduct_total_cents: number
-    transfer_count: number
-    transfer_total_cents: number
-  }
+  custody: CustodyInfo
   open_batch: {
     id: number
     label: string
     opened_at: string
     summary: BatchSummary
+    dividend_rate_percent: number
+    operators: OperatorStat[]
   } | null
   recent_records: LedgerEntryRow[]
 }
@@ -157,6 +249,7 @@ export interface AccountRow {
   display_name: string
   role: 'admin' | 'staff'
   is_active: boolean
+  is_superadmin?: boolean
   merchant_id?: number
   last_login_at: string | null
   created_at: string

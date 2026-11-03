@@ -1,0 +1,3 @@
+-r requirements.txt
+# 仅测试用：生成 .xls 样例，生产环境不需要
+xlwt>=1.3,<2.0
