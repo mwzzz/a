@@ -129,8 +129,8 @@ function close() {
   gap: 12px;
   padding: 12px 14px;
   margin-bottom: 12px;
-  background: #14161c;
-  border: 1px solid #20242d;
+  background: var(--app-bg-panel);
+  border: 1px solid var(--app-border);
   border-radius: 9px;
   font-size: 12.5px;
 }

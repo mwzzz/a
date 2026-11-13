@@ -19,7 +19,24 @@ DEFAULTS = {
     "deposit_low_cents": 3000,
     "deposit_high_cents": 6000,
     "dividend_rate_percent": 50,
+    "dividend_mode": "percent",
+    "dividend_fixed_cents": 0,
 }
+
+# 新商家的默认配置。与 migrations.DEFAULT_SETTINGS 保持一致。
+MERCHANT_DEFAULTS: tuple[tuple[str, str], ...] = (
+    ("last_tea_cents", "200"),
+    ("deposit_low_cents", "3000"),
+    ("deposit_high_cents", "6000"),
+    ("dividend_rate_percent", "50"),
+    ("dividend_mode", "percent"),
+    ("dividend_fixed_cents", "0"),
+)
+
+# 分红方式：percent=按茶水比例，fixed=每局固定金额
+DIVIDEND_MODES = ("percent", "fixed")
+# 每局固定分红上限 1 万元，防止误把「元」当「分」填
+MAX_DIVIDEND_FIXED_CENTS = 1_000_000
 
 
 def _read_all(session: Session, merchant_id: int) -> dict[str, str]:
@@ -62,6 +79,23 @@ def dividend_rate(session: Session, merchant_id: int) -> int:
     return min(100, max(0, value))
 
 
+def get_text(session: Session, merchant_id: int, key: str) -> str:
+    raw = _read_all(session, merchant_id).get(key)
+    if raw is None:
+        return str(DEFAULTS.get(key, ""))
+    return raw
+
+
+def dividend_mode(session: Session, merchant_id: int) -> str:
+    value = get_text(session, merchant_id, "dividend_mode").strip()
+    return value if value in DIVIDEND_MODES else "percent"
+
+
+def dividend_fixed_cents(session: Session, merchant_id: int) -> int:
+    value = get_int(session, merchant_id, "dividend_fixed_cents")
+    return max(0, min(MAX_DIVIDEND_FIXED_CENTS, value))
+
+
 def snapshot(session: Session, merchant_id: int) -> dict:
     merchant = get_merchant(session, merchant_id)
     low, high = thresholds(session, merchant_id)
@@ -70,8 +104,44 @@ def snapshot(session: Session, merchant_id: int) -> dict:
         "deposit_low_cents": low,
         "deposit_high_cents": high,
         "dividend_rate_percent": dividend_rate(session, merchant_id),
+        "dividend_mode": dividend_mode(session, merchant_id),
+        "dividend_fixed_cents": dividend_fixed_cents(session, merchant_id),
         "shop_name": merchant.name,
     }
+
+
+def set_text(
+    session: Session,
+    merchant_id: int,
+    key: str,
+    value: str,
+    actor_id: int | None = None,
+) -> None:
+    stamp = now_text()
+    row = session.get(MerchantSetting, (merchant_id, key))
+    if row is None:
+        session.add(
+            MerchantSetting(
+                merchant_id=merchant_id,
+                key=key,
+                value=value,
+                updated_at=stamp,
+                updated_by=actor_id,
+            )
+        )
+    else:
+        row.value = value
+        row.updated_at = stamp
+        row.updated_by = actor_id
+
+
+def seed_defaults(
+    session: Session, merchant_id: int, actor_id: int | None = None
+) -> None:
+    """新商家建好后的默认配置；已存在的键不覆盖。"""
+    for key, value in MERCHANT_DEFAULTS:
+        if session.get(MerchantSetting, (merchant_id, key)) is None:
+            set_text(session, merchant_id, key, value, actor_id)
 
 
 def set_int(
@@ -108,6 +178,8 @@ def update(
     deposit_low_cents: int | None = None,
     deposit_high_cents: int | None = None,
     dividend_rate_percent: int | None = None,
+    dividend_mode: str | None = None,
+    dividend_fixed_cents: int | None = None,
     shop_name: str | None = None,
     ip: str = "",
 ) -> dict:
@@ -134,6 +206,16 @@ def update(
         if dividend_rate_percent < 0 or dividend_rate_percent > 100:
             raise AppError("分红比例要在 0~100 之间")
         updates["dividend_rate_percent"] = str(int(dividend_rate_percent))
+    if dividend_mode is not None:
+        if dividend_mode not in DIVIDEND_MODES:
+            raise AppError("分红方式只能选按比例或按局固定")
+        updates["dividend_mode"] = dividend_mode
+    if dividend_fixed_cents is not None:
+        if dividend_fixed_cents < 0:
+            raise AppError("每局固定分红不能为负")
+        if dividend_fixed_cents > MAX_DIVIDEND_FIXED_CENTS:
+            raise AppError("每局固定分红不能超过 10000 元")
+        updates["dividend_fixed_cents"] = str(int(dividend_fixed_cents))
 
     if "deposit_low_cents" in updates or "deposit_high_cents" in updates:
         current = snapshot(session, merchant_id)
@@ -141,6 +223,13 @@ def update(
         high = updates.get("deposit_high_cents", str(current["deposit_high_cents"]))
         if int(high) <= int(low):
             raise AppError("押金上限必须大于下限")
+
+    if "dividend_mode" in updates or "dividend_fixed_cents" in updates:
+        current = snapshot(session, merchant_id)
+        mode = updates.get("dividend_mode", current["dividend_mode"])
+        fixed = int(updates.get("dividend_fixed_cents", current["dividend_fixed_cents"]))
+        if mode == "fixed" and fixed <= 0:
+            raise AppError("按局分红时，每局固定金额要大于 0")
 
     stamp = now_text()
     existing = {

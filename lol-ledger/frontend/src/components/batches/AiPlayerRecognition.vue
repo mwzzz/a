@@ -335,11 +335,11 @@ function apply() {
   align-items: center;
   gap: 8px;
   padding: 12px 14px;
-  border: 1px dashed #303745;
+  border: 1px dashed var(--app-border-strong);
   border-radius: 10px;
-  color: #6f7787;
+  color: var(--app-text-muted);
   font-size: 12.5px;
-  background: #101319;
+  background: var(--app-bg-subtle);
 }
 
 .drop {
@@ -348,9 +348,9 @@ function apply() {
   gap: 12px;
   min-height: 92px;
   padding: 12px 14px;
-  border: 1px dashed #303745;
+  border: 1px dashed var(--app-border-strong);
   border-radius: 10px;
-  background: #101319;
+  background: var(--app-bg-subtle);
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease;
 }
@@ -358,7 +358,7 @@ function apply() {
 .drop:hover,
 .drop.dragging {
   border-color: var(--el-color-primary);
-  background: #121722;
+  background: var(--app-bg-hover);
 }
 
 .drop.busy {
@@ -371,7 +371,7 @@ function apply() {
 
 .drop-icon {
   font-size: 30px;
-  color: #3c4353;
+  color: var(--app-text-faint);
 }
 
 .drop-title {
@@ -383,14 +383,14 @@ function apply() {
 
 .drop-hint {
   font-size: 11.5px;
-  color: #6f7787;
+  color: var(--app-text-muted);
   line-height: 1.6;
 }
 
 .drop-hint.tiny,
 .tiny {
   font-size: 11px;
-  color: #5d6575;
+  color: var(--app-text-faint);
 }
 
 .thumb {
@@ -398,7 +398,7 @@ function apply() {
   height: 62px;
   object-fit: cover;
   border-radius: 6px;
-  border: 1px solid #2a303c;
+  border: 1px solid var(--app-border-strong);
   flex: none;
 }
 
@@ -432,9 +432,9 @@ function apply() {
 
 .result {
   margin-top: 10px;
-  border: 1px solid #1e222b;
+  border: 1px solid var(--app-border);
   border-radius: 9px;
-  background: #0e1117;
+  background: var(--app-bg-page);
   overflow: hidden;
 }
 
@@ -445,7 +445,7 @@ function apply() {
   padding: 8px 12px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
-  border-bottom: 1px solid #1c2028;
+  border-bottom: 1px solid var(--app-border);
 }
 
 .row {
@@ -454,7 +454,7 @@ function apply() {
   align-items: center;
   gap: 8px;
   padding: 7px 12px;
-  border-bottom: 1px solid #171b22;
+  border-bottom: 1px solid var(--app-border);
   font-size: 12.5px;
   border-left: 2px solid transparent;
 }
@@ -487,8 +487,8 @@ function apply() {
 .team {
   flex: none;
   font-size: 10.5px;
-  color: #7c8494;
-  border: 1px solid #2a303c;
+  color: var(--app-text-muted);
+  border: 1px solid var(--app-border-strong);
   border-radius: 4px;
   padding: 0 4px;
 }

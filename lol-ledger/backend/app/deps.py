@@ -11,8 +11,8 @@ from sqlalchemy.orm import Session
 
 from app import db as dbmod
 from app.errors import AuthError, ForbiddenError
-from app.models import Merchant, User
-from app.security import decode_token, password_fingerprint
+from app.models import Merchant, User, ZjUser
+from app.security import TOKEN_TYPE_ZJ, decode_token, password_fingerprint
 from app.timeutil import parse_text
 
 bearer = HTTPBearer(auto_error=False)
@@ -36,6 +36,25 @@ class Actor:
     @property
     def name(self) -> str:
         return self.display_name or self.username
+
+
+@dataclass(frozen=True)
+class ZjActor:
+    """查战绩账号的当前登录人。与门店账号完全隔离，只有额度概念。"""
+
+    id: int
+    username: str
+    display_name: str
+    quota_total: int
+    quota_used: int
+
+    @property
+    def name(self) -> str:
+        return self.display_name or self.username
+
+    @property
+    def quota_remaining(self) -> int:
+        return max(self.quota_total - self.quota_used, 0)
 
 
 def get_read_db() -> Iterator[Session]:
@@ -68,6 +87,9 @@ def get_current_user(
     if credentials is None:
         raise AuthError("请先登录")
     payload = decode_token(credentials.credentials)
+    # 查战绩账号的令牌不能用于记账接口，即使 id 恰好命中 users.id
+    if payload.get("typ") == TOKEN_TYPE_ZJ:
+        raise AuthError("登录状态无效，请重新登录")
     try:
         user_id = int(payload["sub"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -98,6 +120,41 @@ def get_current_user(
         merchant_id=merchant.id,
         merchant_name=merchant.name,
         is_superadmin=bool(user.is_superadmin),
+    )
+
+
+def get_current_zj_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    session: Session = Depends(get_read_db),
+) -> ZjActor:
+    """查战绩账号鉴权：只认 typ=zj 的令牌，记账令牌一律拒绝。"""
+    if credentials is None:
+        raise AuthError("请先登录")
+    payload = decode_token(credentials.credentials)
+    if payload.get("typ") != TOKEN_TYPE_ZJ:
+        raise AuthError("登录状态无效，请重新登录")
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AuthError("登录状态无效，请重新登录") from exc
+
+    user = session.get(ZjUser, user_id)
+    if user is None:
+        raise AuthError("账号不存在，请重新登录")
+    if not user.is_active:
+        raise AuthError("账号已停用，请联系管理员")
+
+    issued_at = int(payload.get("iat", 0))
+    changed_at = int(parse_text(user.password_changed_at).timestamp())
+    if issued_at < changed_at or payload.get("pv") != password_fingerprint(user.password_hash):
+        raise AuthError("密码已修改，请重新登录")
+
+    return ZjActor(
+        id=user.id,
+        username=user.username,
+        display_name=user.display_name,
+        quota_total=int(user.quota_total),
+        quota_used=int(user.quota_used),
     )
 
 

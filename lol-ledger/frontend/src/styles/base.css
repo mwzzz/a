@@ -68,9 +68,143 @@ a {
 }
 
 .panel {
-  background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 10px;
+  background: var(--app-bg-panel);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+}
+
+/* 数字表格：金额右对齐、表头吸顶、行悬停跟随主题 */
+.el-table {
+  --el-table-border-color: var(--app-border);
+  --el-table-header-bg-color: var(--app-bg-subtle);
+  --el-table-row-hover-bg-color: var(--app-bg-hover);
+}
+
+.el-table th.el-table__cell {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.el-table .money-cell {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* 日期选择器根节点带 el-input__wrapper，flex-grow 会把工具栏撑开 */
+.toolbar > .el-date-editor {
+  flex: 0 0 auto;
+}
+
+/* 移动端专用块默认隐藏；加 !important 防止组件内 display 覆盖 */
+.mobile-only {
+  display: none !important;
+}
+
+@media (max-width: 768px) {
+  .page {
+    padding: 14px 14px 88px;
+  }
+
+  .page-head {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .page-title {
+    font-size: 18px;
+  }
+
+  .toolbar {
+    gap: 8px;
+  }
+
+  .toolbar > * {
+    flex: 1 1 auto;
+  }
+
+  .desktop-only {
+    display: none !important;
+  }
+
+  .mobile-only {
+    display: block !important;
+  }
+
+  .el-dialog {
+    width: calc(100vw - 16px) !important;
+    max-width: none;
+    margin: 8px auto !important;
+    max-height: calc(100vh - 16px);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .el-dialog__body {
+    overflow-y: auto;
+  }
+
+  .el-dialog__footer {
+    position: sticky;
+    bottom: 0;
+    padding-top: 8px;
+    background: var(--el-dialog-bg-color);
+  }
+
+  .el-message-box {
+    width: calc(100vw - 32px) !important;
+  }
+
+  .el-table {
+    font-size: 12px;
+  }
+
+  /* 工具栏控件在手机上铺满可用宽度，避免固定像素宽度溢出 */
+  .toolbar .el-input,
+  .toolbar .el-select {
+    flex: 1 1 140px;
+    width: auto !important;
+    min-width: 0;
+  }
+
+  .toolbar .el-date-editor {
+    flex: 1 1 100%;
+    width: 100% !important;
+  }
+
+  .el-drawer.rtl,
+  .el-drawer.ltr {
+    width: calc(100vw - 40px) !important;
+  }
+
+  /* 日期区间弹层改单栏，避免 646px 面板超出屏幕 */
+  .el-picker__popper .el-date-range-picker {
+    width: calc(100vw - 16px);
+  }
+
+  .el-picker__popper .el-date-range-picker .el-picker-panel__body {
+    min-width: 0;
+    margin-left: 0;
+  }
+
+  .el-picker__popper .el-date-range-picker__content {
+    display: block;
+    width: 100%;
+  }
+
+  .el-picker__popper .el-date-range-picker__content.is-left {
+    border-right: none;
+  }
+
+  .el-pagination {
+    flex-wrap: wrap;
+    justify-content: center;
+    row-gap: 6px;
+  }
+
+  .el-pagination .el-pagination__sizes {
+    display: none;
+  }
 }
 
 .toolbar {

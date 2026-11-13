@@ -61,7 +61,9 @@ def test_sort_by_games_played_then_game_id_text(client, admin_headers) -> None:
             text("UPDATE players SET games_played = 5 WHERE id = :a"), {"a": ids["a"]}
         )
 
-    body = client.get("/api/v1/players", headers=admin_headers).json()
+    body = client.get(
+        "/api/v1/players", params={"sort": "games_played_desc"}, headers=admin_headers
+    ).json()
     assert [item["game_id"] for item in body["items"]] == ["a", "10", "2"]
 
 
@@ -193,3 +195,16 @@ def test_player_detail_totals(client, admin_headers) -> None:
     assert detail["total_out_cents"] == 1200
     assert detail["deposit_cents"] == 1800
     assert detail["entry_count"] == 2
+
+
+def test_default_sort_is_deposit_asc(client, admin_headers) -> None:
+    """默认按押金升序，欠费的排在最前面。"""
+    rich = new_player(client, admin_headers, "有钱哥")
+    poor = new_player(client, admin_headers, "欠费哥")
+    add_money(client, admin_headers, rich["id"], 5000)
+    add_money(client, admin_headers, poor["id"], 100)
+
+    items = client.get("/api/v1/players", headers=admin_headers).json()["items"]
+    balances = [item["deposit_cents"] for item in items]
+    assert balances == sorted(balances)
+    assert items[0]["game_id"] == "欠费哥"

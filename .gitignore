@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .cursor/
+.codebuddy/
 .workbuddy/
 neizhanjizhang/.workbuddy/
 

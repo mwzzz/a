@@ -104,13 +104,7 @@ def _create_merchant(name: str, note: str) -> int:
         )
         session.add(merchant)
         session.flush()
-        for key, value in (
-            ("last_tea_cents", 200),
-            ("deposit_low_cents", 3000),
-            ("deposit_high_cents", 6000),
-            ("dividend_rate_percent", 50),
-        ):
-            options.set_int(session, merchant.id, key, value)
+        options.seed_defaults(session, merchant.id)
         print(f"已创建商家：{merchant.name}（id={merchant.id}）")
         print(f"接着建管理员：python -m app.cli create-admin --username <账号> --merchant \"{merchant.name}\"")
     return 0

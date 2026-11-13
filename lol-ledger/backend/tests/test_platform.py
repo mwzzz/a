@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from tests.conftest import DEFAULT_PASSWORD
+from tests.test_players import new_player
+from tests.test_sessions import create_session
 
 
 def _new_merchant(
@@ -319,3 +321,148 @@ def test_platform_scoped_to_merchant(client, superadmin_headers) -> None:
         ).status_code
         == 404
     )
+
+
+# ---------------------------------------------------------------- 清空商家经营数据
+def _seed_shop(client, headers, admin_id: int, *, tag: str = "极光") -> int:
+    """造一条完整链路：玩家 + 押金 + 班次 + 一局 + 关班 + 分红结算。"""
+    player = new_player(client, headers, f"{tag}玩家")["id"]
+    client.post(
+        f"/api/v1/players/{player}/deposits",
+        json={"amount_cents": 1000, "note": "开卡"},
+        headers=headers,
+    )
+    create_session(client, headers, 0, [player], tea=300)
+    settle = client.post(
+        "/api/v1/reports/dividends/settle",
+        json={"user_ids": [admin_id]},
+        headers=headers,
+    )
+    assert settle.status_code == 201, settle.text
+    return 0
+
+
+def _purge(client, headers, merchant_id: int, name: str, note: str = ""):
+    return client.post(
+        f"/api/v1/platform/merchants/{merchant_id}/purge",
+        json={"confirm_name": name, "note": note},
+        headers=headers,
+    )
+
+
+def test_purge_preview_shows_scope(client, superadmin_headers, admin_headers, admin) -> None:
+    _seed_shop(client, admin_headers, admin["id"])
+    preview = client.get(
+        "/api/v1/platform/merchants/1/purge-preview", headers=superadmin_headers
+    )
+    assert preview.status_code == 200, preview.text
+    body = preview.json()
+    assert body["merchant"]["name"] == "默认商家"
+    assert body["counts"]["players"] == 1
+    assert body["counts"]["sessions"] == 1
+    assert body["counts"]["settlements"] == 1
+    assert body["counts"]["ledger"] >= 2
+    assert body["deposit_total_cents"] == 700
+    assert body["keep"] == {"accounts": True, "settings": True, "merchant": True}
+    assert body["open_batch"] is None
+
+
+def test_purge_requires_superadmin(client, admin_headers, admin) -> None:
+    _seed_shop(client, admin_headers, admin["id"])
+    assert (
+        client.get(
+            "/api/v1/platform/merchants/1/purge-preview", headers=admin_headers
+        ).status_code
+        == 403
+    )
+    assert _purge(client, admin_headers, 1, "默认商家").status_code == 403
+
+
+def test_purge_rejects_wrong_name(client, superadmin_headers, admin_headers, admin) -> None:
+    _seed_shop(client, admin_headers, admin["id"])
+    response = _purge(client, superadmin_headers, 1, "默认商家 ")
+    assert response.status_code == 200  # 首尾空格会被 strip
+
+    _seed_shop(client, admin_headers, admin["id"])
+    wrong = _purge(client, superadmin_headers, 1, "默认")
+    assert wrong.status_code == 400
+    assert "商家名不一致" in wrong.json()["detail"]
+    still = client.get("/api/v1/players", headers=admin_headers).json()
+    assert still["total"] >= 1
+
+
+def test_purge_clears_target_and_keeps_everything_else(
+    client, superadmin_headers, admin_headers, admin, admin_b_headers, admin_b, merchant_b
+) -> None:
+    _seed_shop(client, admin_headers, admin["id"], tag="极光")
+    _seed_shop(client, admin_b_headers, admin_b["id"], tag="蜘蛛")
+
+    response = _purge(client, superadmin_headers, 1, "默认商家", note="重来一季")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["counts"]["players"] == 1
+    assert body["backup"].startswith("pre-purge-1-")
+    assert body["backup"].endswith(".db")
+
+    # 目标商家：业务数据清零，账号/设置/商家保留
+    assert client.get("/api/v1/players", headers=admin_headers).json()["total"] == 0
+    assert client.get("/api/v1/sessions", headers=admin_headers).json()["total"] == 0
+    assert (
+        client.get("/api/v1/reports/dividends/settlements", headers=admin_headers).json()[
+            "total"
+        ]
+        == 0
+    )
+    assert client.get("/api/v1/users", headers=admin_headers).status_code == 200
+    assert client.get("/api/v1/settings", headers=admin_headers).json()["shop_name"] == "默认商家"
+    overview = client.get("/api/v1/overview", headers=admin_headers).json()
+    assert overview["player_count"] == 0
+    assert overview["total_deposit_cents"] == 0
+    assert overview["today"]["session_count"] == 0
+    assert client.get("/api/v1/reconcile", headers=admin_headers).json()["ok"] is True
+
+    # 另一个商家完全没被碰
+    other = client.get("/api/v1/players", headers=admin_b_headers).json()
+    assert other["total"] == 1
+    assert client.get("/api/v1/sessions", headers=admin_b_headers).json()["total"] == 1
+
+    # 清空后可以直接开局
+    fresh = new_player(client, admin_headers, "重新开始")["id"]
+    session = create_session(client, admin_headers, 0, [fresh], tea=200)
+    assert session["player_count"] == 1
+
+
+def test_purge_writes_audit_and_backup(
+    client, superadmin_headers, admin_headers, admin, database
+) -> None:
+    _seed_shop(client, admin_headers, admin["id"])
+    assert _purge(client, superadmin_headers, 1, "默认商家").status_code == 200
+
+    import sqlite3
+
+    conn = sqlite3.connect(database)
+    try:
+        row = conn.execute(
+            "SELECT action, detail, ip FROM audit_logs WHERE action='purge_merchant_data'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert "默认商家" in row[1]
+    assert "pre-purge-1-" in row[1]
+    assert row[2]  # 记录真实 IP
+
+    backups = list(database.parent.glob("backups/pre-purge-1-*.db"))
+    assert len(backups) == 1
+
+
+def test_purge_rejects_platform_merchant(client, superadmin_headers, superadmin) -> None:
+    platform_id = superadmin["merchant_id"]
+    assert (
+        client.get(
+            f"/api/v1/platform/merchants/{platform_id}/purge-preview",
+            headers=superadmin_headers,
+        ).status_code
+        == 404
+    )
+    assert _purge(client, superadmin_headers, platform_id, "平台管理").status_code == 404

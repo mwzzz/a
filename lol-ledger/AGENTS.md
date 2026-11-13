@@ -1,0 +1,102 @@
+# AGENTS.md
+
+给 AI 编码助手的开工说明。**改代码前先读完这一页**，它只写「不知道就会写错或搞坏数据」的事，其余看文档索引。
+
+## 这是什么
+
+网吧 / 电竞馆的开黑记账系统：记录每局游戏、玩家押金流水、店员分红与对账。
+一套程序服务多个商家，**每家数据互相隔离**，店内多个店员共用本店数据。已经在真实门店跑生产数据。
+
+## 红线（违反任何一条都要停下来问人）
+
+1. **不碰生产库**。需要看数据只能 `sqlite3 .backup` 出只读快照，再在副本上分析。任何 `UPDATE/DELETE/INSERT` 打到线上都不允许。
+2. **发布和回滚必须用户点头**。`deploy/` 下有 `push.ps1`、`rollback.sh`，能力清楚但不要自己执行；命令细节见 `deploy/部署说明.md`。
+3. **迁移必须先确认是不是破坏性的**。v8 那次取消班次时清空过场次与班次历史（后来靠备份恢复）。新增迁移前先读 `migrations.py` 里对应函数，确认删了什么。
+4. **不改 `audit_logs`**，不改历史分红结算记录，不手工改 `players.deposit_cents`（余额必须由流水推导）。
+5. `.env`、SSH 私钥、任何账号密码与密钥，不进仓库、不进日志、不写进文档。
+6. 不删 `.codebuddy/`。
+
+## 技术栈与目录
+
+- 后端：FastAPI + SQLAlchemy 2.0 + SQLite（WAL），schema 版本化迁移，当前 **v10**
+- 前端：Vue 3 + TypeScript + Element Plus + Pinia + Vite
+- 目录：`backend/app`（`api/` 路由、`services/` 业务、`migrations.py` 建表与迁移）、`backend/tests`、`frontend/src`（`views/` 页面、`api/` 请求与类型）、`deploy/`、`docs/`
+
+## 本地开发
+
+```bash
+# 后端（首次需 python -m venv .venv 并安装 backend/requirements.txt）
+cd backend && DB_PATH=data/dev.db python -m app.cli init-db
+DB_PATH=data/dev.db python -m uvicorn app.main:app --reload --port 8010
+
+# 前端（代理默认指向 127.0.0.1:8010，见 frontend/vite.config.ts）
+cd frontend && npm run dev
+
+# 用生产数据副本开发（不碰线上）
+powershell -File deploy/dev-from-backup.ps1              # 只准备数据
+powershell -File deploy/dev-from-backup.ps1 -Run         # 直接起后端
+```
+
+提交前必须全绿：
+
+```bash
+cd backend && python -m pytest -q          # 后端全部用例
+cd frontend && npm run typecheck && npm run build
+```
+
+## 业务口径（最容易写错的地方）
+
+| 概念 | 口径 |
+| --- | --- |
+| 金额 | 一律**整数分**，字段名带 `_cents`，展示时再除 100 |
+| 茶水 | `sessions.tea_fee_cents` 是**每人**茶水，一局总额 = 每人 × `player_count` |
+| 分红 | 两种模式：`percent`（茶水总额 × 比例）/ `fixed`（局数 × 每局金额），存在 `merchant_settings` |
+| 差额 | 收押金 − 退押金，按 `operator_id` 汇总；**正数=店员应交，负数=店长应补**，划转不计入 |
+| 时间归属 | 场次按 `played_at`，押金与分红按 `created_at`；统一东八区，字符串字典序即时序 |
+| 余额 | `players.deposit_cents` = 该玩家所有流水净额 = 末条流水 `balance_after_cents`，三者必须相等 |
+| 分红幂等 | 同一区间（含重叠）只结算一次；历史记录只存到日期，比较前要归一化成 00:00 / 23:59:59 |
+
+对账不通过（`/api/v1/reconcile`）说明有人绕过接口改过余额，找管理员，不要自行修数据。
+
+## 数据与迁移
+
+- 表结构以 `backend/app/migrations.py` 为准，模型只是映射；`SCHEMA_VERSION` 每次加表 / 加列都要 +1。
+- 每个 `_upgrade_vN_to_vM` 的结构：`_backup(conn, db_path, "pre-vM")` → `PRAGMA foreign_keys=OFF` → `BEGIN IMMEDIATE` → 改表 → `PRAGMA user_version = M` → `_assert_foreign_keys` → `COMMIT`。
+- 迁移必须幂等（`IF NOT EXISTS`、判重后再插），测试里的 `_ddl_for(version)` 要同步加「旧版本跳过新表」的分支。
+- 事务边界由 `deps.get_write_db` 控制，服务层用 `session.flush()`，不要自己 `commit()`。
+
+## 已知坑（踩过一次就别再踩）
+
+- **备份不能用 `cp`**：WAL 模式下直接复制会得到不一致副本，必须 `sqlite3 db ".backup out.db"`。
+- **`deploy/*.sh` 必须 755**：权限掉了 systemd 报 `status=203/EXEC`，备份会静默失败。
+- **PowerShell 脚本存 UTF-8 with BOM**：PS 5.1 按 GBK 读会报语法错。
+- **前端 `el-date-picker` 用 `value-format="YYYY-MM-DDTHH:mm"`**，后端 `timeutil.moment_bounds` 同时吃纯日期和分钟。
+- 单机 1.6G 内存，别起多余进程；uvicorn 单 worker 足够。
+
+## 历史包袱（不要试图「修好」，先问）
+
+- **v8 取消了开班/交班**，`sessions.batch_id` 已删除，场次与班次的归属**永久丢失**；`batches` 表残留 6 条孤儿数据，新代码完全不读它。
+- **v9 的查战绩（`zj_*` 五张表、`api/zj*.py`）是另一个会话加的模块**，与记账主流程无关，改别的功能时别动。
+- 两条历史分红结算占住了 `11-01~11-05`（极光电竞）和 `11-01~11-06`（面包人）区间，结算这两个区间时对应用户会被跳过，这是预期行为。
+- `services/batches.py`、`services/custody.py` 是 v8 之后的死代码，保留仅作参考。
+
+## 小工具约定
+
+`frontend/src/views/ToolsView.vue` 是工具入口，加新工具 = 加一张卡片 + 一个 `/tools/xxx` 路由 + 一个 `services/xxx.py`。
+已有：排队登记（`/tools/queue`）、常用名单（`/tools/name-lists`）。
+
+## 文档索引
+
+| 文件 | 什么时候看 |
+| --- | --- |
+| `README.md` | 项目全貌、功能清单 |
+| `docs/规则.md` | 改业务逻辑前，金额与统计口径 |
+| `docs/API.md` | 加接口、改参数 |
+| `deploy/部署说明.md` | 部署、备份、回滚、恢复（含所有连接信息） |
+| `docs/店员操作手册.md` | 需求里的「店员怎么用」 |
+
+## 改完记得
+
+- 加表 / 加页面 / 加小工具时，同步更新本文件的「技术栈与目录」「小工具约定」对应段落。
+- 动了业务口径，同步 `docs/规则.md` 与相关测试；口径只写在代码里等于没写。
+- 不写「临时脚本」留在仓库：分析用的脚本用完就删。

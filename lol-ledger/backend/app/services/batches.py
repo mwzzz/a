@@ -26,12 +26,35 @@ REASON_KEYS = {
 
 
 def dividend_cents(tea_cents: int, rate_percent: int) -> int:
-    """按分计算，四舍五入到分。"""
+    """按茶水比例分红，按分计算，四舍五入到分。"""
     return (int(tea_cents) * int(rate_percent) + 50) // 100
 
 
+def fixed_dividend_cents(session_count: int, unit_cents: int) -> int:
+    """按局固定分红：局数 × 每局金额。"""
+    return max(0, int(session_count)) * max(0, int(unit_cents))
+
+
+def dividend_by_mode(
+    session_count: int,
+    tea_cents: int,
+    mode: str | None,
+    rate_percent: int,
+    fixed_cents: int,
+) -> int:
+    if (mode or "percent") == "fixed":
+        return fixed_dividend_cents(session_count, fixed_cents)
+    return dividend_cents(tea_cents, rate_percent)
+
+
 def operator_stats(
-    session: Session, batch_id: int, merchant_id: int, rate_percent: int
+    session: Session,
+    batch_id: int,
+    merchant_id: int,
+    *,
+    mode: str = "percent",
+    rate_percent: int = 50,
+    fixed_cents: int = 0,
 ) -> list[dict]:
     rows = session.execute(
         select(
@@ -65,10 +88,12 @@ def operator_stats(
                 "session_count": int(count or 0),
                 "player_times": int(player_times or 0),
                 "tea_cents": tea,
-                "dividend_cents": dividend_cents(tea, rate_percent),
+                "dividend_cents": dividend_by_mode(
+                    int(count or 0), tea, mode, rate_percent, fixed_cents
+                ),
             }
         )
-    result.sort(key=lambda item: (-item["tea_cents"], -item["session_count"]))
+    result.sort(key=lambda item: (-item["dividend_cents"], -item["session_count"]))
     return result
 
 
@@ -244,6 +269,8 @@ def close_batch(
         raise AppError("对账不通过，不能交班。请联系管理员检查押金余额。")
 
     rate = options.dividend_rate(session, merchant_id)
+    mode = options.dividend_mode(session, merchant_id)
+    fixed_cents = options.dividend_fixed_cents(session, merchant_id)
     custody.record_close_handover(
         session,
         actor,
@@ -274,6 +301,8 @@ def close_batch(
     batch.net_change_cents = summary["net_change_cents"]
     batch.deposit_total_cents = summary["deposit_total_cents"]
     batch.dividend_rate_percent = rate
+    batch.dividend_mode = mode
+    batch.dividend_fixed_cents = fixed_cents
 
     write_audit(
         session,
@@ -298,8 +327,12 @@ def batch_row(session: Session, batch: Batch, sessions: list[dict] | None = None
     summary = _summary_for(session, batch)
     if batch.status == "closed":
         rate = int(batch.dividend_rate_percent or 50)
+        mode = batch.dividend_mode or "percent"
+        fixed_cents = int(batch.dividend_fixed_cents or 0)
     else:
         rate = options.dividend_rate(session, batch.merchant_id)
+        mode = options.dividend_mode(session, batch.merchant_id)
+        fixed_cents = options.dividend_fixed_cents(session, batch.merchant_id)
     handover = custody.latest_handover(session, batch.id)
     return {
         "id": batch.id,
@@ -315,7 +348,16 @@ def batch_row(session: Session, batch: Batch, sessions: list[dict] | None = None
         "player_times": summary["player_times"],
         "summary": summary,
         "dividend_rate_percent": rate,
-        "operators": operator_stats(session, batch.id, batch.merchant_id, rate),
+        "dividend_mode": mode,
+        "dividend_fixed_cents": fixed_cents,
+        "operators": operator_stats(
+            session,
+            batch.id,
+            batch.merchant_id,
+            mode=mode,
+            rate_percent=rate,
+            fixed_cents=fixed_cents,
+        ),
         "handover": custody.handover_row(handover) if handover else None,
         "sessions": sessions or [],
     }

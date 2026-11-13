@@ -1,4 +1,4 @@
-"""总览：押金、本班统计、在库现金与保管人、最近流水。全部限定在当前商家。"""
+"""总览：押金、玩家数、今日经营汇总、最近流水。全部限定在当前商家。"""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Player
-from app.services import custody
-from app.services.batches import batch_row, get_open_batch
+from app.services import options
 from app.services.options import thresholds
 from app.services.records import list_deposit_records
+from app.services.summary import operator_summary
 
 
 def overview(session: Session, merchant_id: int) -> dict:
@@ -47,27 +47,19 @@ def overview(session: Session, merchant_id: int) -> dict:
         or 0
     )
 
-    batch = get_open_batch(session, merchant_id)
-    batch_payload = None
-    if batch is not None:
-        row = batch_row(session, batch, [])
-        batch_payload = {
-            "id": batch.id,
-            "label": batch.label,
-            "opened_at": batch.opened_at,
-            "summary": row["summary"],
-            "dividend_rate_percent": row["dividend_rate_percent"],
-            "operators": row["operators"],
-        }
-
+    today = operator_summary(session, merchant_id)
     recent = list_deposit_records(session, merchant_id=merchant_id, page=1, page_size=10)
+
     return {
+        "date": today["date_from"],
         "total_deposit_cents": total_deposit,
         "player_count": player_count,
         "low_deposit_count": low_count,
         "deposit_low_cents": low,
         "deposit_high_cents": high,
-        "custody": custody.current(session, merchant_id),
-        "open_batch": batch_payload,
+        "dividend_mode": options.dividend_mode(session, merchant_id),
+        "dividend_rate_percent": options.dividend_rate(session, merchant_id),
+        "dividend_fixed_cents": options.dividend_fixed_cents(session, merchant_id),
+        "today": today["totals"],
         "recent_records": recent["items"],
     }

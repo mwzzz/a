@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.deps import Actor, client_ip, get_read_db, get_write_db, require_superadmin
 from app.schemas import (
     MerchantCreateIn,
+    MerchantPurgeIn,
     MerchantUpdateIn,
     PasswordResetIn,
     UserCreateIn,
@@ -71,6 +72,35 @@ def update_merchant(
         ip=client_ip(request),
     )
     return platform_service.merchant_row(session, merchant)
+
+
+@router.get("/merchants/{merchant_id}/purge-preview")
+def purge_preview(
+    merchant_id: int,
+    actor: Actor = Depends(require_superadmin),
+    session: Session = Depends(get_read_db),
+) -> dict:
+    """清空前预览：将删除多少数据、保留什么。只读。"""
+    return platform_service.purge_preview(session, actor, merchant_id)
+
+
+@router.post("/merchants/{merchant_id}/purge")
+def purge_merchant_data(
+    merchant_id: int,
+    payload: MerchantPurgeIn,
+    request: Request,
+    actor: Actor = Depends(require_superadmin),
+    session: Session = Depends(get_write_db),
+) -> dict:
+    """清空该商家的玩家、班次、场次、流水、交接与分红结算（不可恢复）。"""
+    return platform_service.purge_merchant_data(
+        session,
+        actor,
+        merchant_id,
+        confirm_name=payload.confirm_name,
+        note=payload.note,
+        ip=client_ip(request),
+    )
 
 
 @router.get("/merchants/{merchant_id}/users")

@@ -42,7 +42,7 @@
       <span class="muted small">低于 ¥{{ formatCents(lowCents) }} 红色 · 超过 ¥{{ formatCents(highCents) }} 绿色</span>
     </div>
 
-    <div class="panel">
+    <div class="panel desktop-only">
       <el-table
         v-loading="loading"
         :data="rows"
@@ -108,6 +108,47 @@
       </div>
     </div>
 
+    <div class="mobile-only player-cards">
+      <div v-for="row in rows" :key="row.id" class="player-card" @click="openLedger(row)">
+        <div class="player-card-head">
+          <div>
+            <div class="player-name">{{ row.game_id }}</div>
+            <div class="cell-sub">
+              创建者 {{ row.creator?.display_name || '-' }} · {{ row.games_played }} 局
+            </div>
+          </div>
+          <div class="player-deposit">
+            <span class="muted">押金</span>
+            <DepositBadge :cents="row.deposit_cents" :level="row.deposit_level" />
+          </div>
+        </div>
+        <div class="player-card-meta">
+          <span>最后活动 {{ relative(row.last_active_at) }}</span>
+          <span v-if="row.account">账号 {{ row.account }}</span>
+          <span v-if="row.remark">{{ row.remark }}</span>
+        </div>
+        <div class="player-card-ops" @click.stop>
+          <el-button size="small" @click="openDeposit(row, 'add')">加押金</el-button>
+          <el-button size="small" @click="openDeposit(row, 'refund')">退押金</el-button>
+          <el-button size="small" @click="openTransfer(row)">划押</el-button>
+          <el-button size="small" @click="openEdit(row)">编辑</el-button>
+        </div>
+      </div>
+      <div v-if="!loading && !rows.length" class="empty-hint">还没有玩家</div>
+      <div class="pager">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          :total="total"
+          :page-sizes="[20, 50, 100]"
+          layout="total, prev, pager, next"
+          small
+          @current-change="load"
+          @size-change="reload"
+        />
+      </div>
+    </div>
+
     <PlayerFormDialog v-model="formVisible" :player="editing" @saved="onSaved" />
     <PlayerImportDialog v-model="importVisible" @saved="onSaved" />
     <DepositDialog
@@ -154,7 +195,7 @@ const page = ref(1)
 const pageSize = ref(20)
 const keyword = ref('')
 const level = ref('')
-const sort = ref('games_played_desc')
+const sort = ref('deposit_asc')
 const loading = ref(false)
 
 const totalDeposit = ref(0)
@@ -266,14 +307,21 @@ watch(keyword, () => {
   timer = window.setTimeout(reload, 400)
 })
 
+function handleQueryAction() {
+  if (route.query.new === '1') {
+    openCreate()
+    router.replace({ name: 'players' })
+    return
+  }
+  if (route.query.import === '1') {
+    importVisible.value = true
+    router.replace({ name: 'players' })
+  }
+}
+
 watch(
-  () => route.query.new,
-  (value) => {
-    if (value === '1') {
-      openCreate()
-      router.replace({ name: 'players' })
-    }
-  },
+  () => [route.query.new, route.query.import],
+  () => handleQueryAction(),
 )
 
 onMounted(async () => {
@@ -284,10 +332,7 @@ onMounted(async () => {
   } catch {
     /* 忽略 */
   }
-  if (route.query.new === '1') {
-    openCreate()
-    router.replace({ name: 'players' })
-  }
+  handleQueryAction()
 })
 </script>
 
@@ -312,5 +357,59 @@ onMounted(async () => {
   display: flex;
   justify-content: flex-end;
   padding: 12px 14px;
+}
+
+.player-card {
+  padding: 12px 14px;
+  background: var(--app-bg-panel);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+}
+
+.player-card + .player-card {
+  margin-top: 8px;
+}
+
+.player-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.player-name {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.player-deposit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.player-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--app-text-muted);
+}
+
+.player-card-ops {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.player-card-ops :deep(.el-button) {
+  flex: 1;
+  margin-left: 0;
 }
 </style>

@@ -1,20 +1,29 @@
 <template>
   <div class="shell">
     <TopBar />
+    <ShiftStrip />
     <main class="shell-main">
       <router-view />
     </main>
+    <BottomNav />
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted } from 'vue'
 
+import BottomNav from '@/layouts/BottomNav.vue'
+import ShiftStrip from '@/layouts/ShiftStrip.vue'
 import TopBar from '@/layouts/TopBar.vue'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 
 const app = useAppStore()
-onMounted(() => app.applyTheme())
+const auth = useAuthStore()
+onMounted(() => {
+  app.applyTheme()
+  if (!auth.isSuperadmin) void app.refreshToday()
+})
 </script>
 
 <style scoped>
@@ -27,5 +36,12 @@ onMounted(() => app.applyTheme())
 
 .shell-main {
   flex: 1;
+  padding-bottom: 0;
+}
+
+@media (max-width: 768px) {
+  .shell-main {
+    padding-bottom: 64px;
+  }
 }
 </style>

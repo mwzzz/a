@@ -113,7 +113,8 @@ def main() -> int:
             )
 
         deposits.transfer(session, actor, created[0], created[7], 600, "帮朋友垫一局")
-        deposits.refund(session, actor, created[9], 300, "退押金")
+        # 10 号玩家初始 6 元、已扣 4 元茶水，只能退剩下的 2 元
+        deposits.refund(session, actor, created[9], 100, "退押金")
 
         print(f"演示数据完成：{len(created)} 个玩家，批次 #{batch.id}，{len(TEAMS)} 局")
     return 0

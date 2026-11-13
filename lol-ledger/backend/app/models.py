@@ -91,6 +91,9 @@ class Batch(Base):
     net_change_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     deposit_total_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     dividend_rate_percent: Mapped[int | None] = mapped_column(Integer, default=50)
+    # 交班时固化：percent=按茶水比例，fixed=每局固定金额
+    dividend_mode: Mapped[str] = mapped_column(String(16), default="percent")
+    dividend_fixed_cents: Mapped[int] = mapped_column(Integer, default=0)
 
     opener: Mapped[User | None] = relationship(User, foreign_keys=[opened_by], lazy="joined")
     closer: Mapped[User | None] = relationship(User, foreign_keys=[closed_by], lazy="joined")
@@ -101,7 +104,6 @@ class GameSession(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     merchant_id: Mapped[int] = mapped_column(ForeignKey("merchants.id"))
-    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"))
     name: Mapped[str] = mapped_column(String(64), default="")
     played_at: Mapped[str] = mapped_column(String(40))
     tea_fee_cents: Mapped[int] = mapped_column(Integer, default=0)
@@ -111,7 +113,6 @@ class GameSession(Base):
     created_at: Mapped[str] = mapped_column(String(40))
 
     operator: Mapped[User | None] = relationship(User, lazy="joined")
-    batch: Mapped[Batch | None] = relationship(Batch, lazy="joined")
 
 
 class SessionPlayer(Base):
@@ -203,3 +204,196 @@ class AuditLog(Base):
     detail: Mapped[str] = mapped_column(Text, default="")
     ip: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[str] = mapped_column(String(40))
+
+
+class DividendSettlement(Base):
+    """一次分红结算：某个操作人在一个日期区间内已关班批次的汇总。"""
+
+    __tablename__ = "dividend_settlements"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    merchant_id: Mapped[int] = mapped_column(ForeignKey("merchants.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    username_snapshot: Mapped[str] = mapped_column(String(64))
+    display_name_snapshot: Mapped[str] = mapped_column(String(64), default="")
+    period_start: Mapped[str] = mapped_column(String(40))
+    period_end: Mapped[str] = mapped_column(String(40))
+    session_count: Mapped[int] = mapped_column(Integer, default=0)
+    player_times: Mapped[int] = mapped_column(Integer, default=0)
+    tea_cents: Mapped[int] = mapped_column(Integer, default=0)
+    dividend_cents: Mapped[int] = mapped_column(Integer, default=0)
+    note: Mapped[str] = mapped_column(String(200), default="")
+    settled_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[str] = mapped_column(String(40))
+
+
+class DividendSettlementBatch(Base):
+    """结算覆盖的班次。batch_id 唯一，保证一个班次不会被重复结算。"""
+
+    __tablename__ = "dividend_settlement_batches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    settlement_id: Mapped[int] = mapped_column(ForeignKey("dividend_settlements.id"))
+    batch_id: Mapped[int] = mapped_column(ForeignKey("batches.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    merchant_id: Mapped[int] = mapped_column(ForeignKey("merchants.id"))
+    session_count: Mapped[int] = mapped_column(Integer, default=0)
+    player_times: Mapped[int] = mapped_column(Integer, default=0)
+    tea_cents: Mapped[int] = mapped_column(Integer, default=0)
+    dividend_cents: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ToolList(Base):
+    """常用名单的分类，例如「打手」「免押金」。"""
+
+    __tablename__ = "tool_lists"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    merchant_id: Mapped[int] = mapped_column(ForeignKey("merchants.id"))
+    name: Mapped[str] = mapped_column(String(32))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[str] = mapped_column(String(40))
+
+    items: Mapped[list[ToolItem]] = relationship(
+        "ToolItem",
+        back_populates="parent",
+        cascade="all, delete-orphan",
+        order_by="ToolItem.sort_order",
+        lazy="selectin",
+    )
+
+
+class ToolItem(Base):
+    """名单里的一条记录，content 是名字，note 是可选备注。"""
+
+    __tablename__ = "tool_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    list_id: Mapped[int] = mapped_column(ForeignKey("tool_lists.id"))
+    merchant_id: Mapped[int] = mapped_column(ForeignKey("merchants.id"))
+    content: Mapped[str] = mapped_column(String(64))
+    note: Mapped[str] = mapped_column(String(100), default="")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[str] = mapped_column(String(40))
+
+    parent: Mapped[ToolList] = relationship("ToolList", back_populates="items")
+
+
+class QueueEntry(Base):
+    """排队登记（小工具）。按自然日展示，跨天不影响历史记录。"""
+
+    __tablename__ = "queue_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    merchant_id: Mapped[int] = mapped_column(ForeignKey("merchants.id"))
+    game_id: Mapped[str] = mapped_column(String(64))
+    note: Mapped[str] = mapped_column(String(100), default="")
+    status: Mapped[str] = mapped_column(String(16), default="waiting")
+    operator_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40))
+    called_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    finished_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    operator: Mapped[User | None] = relationship(User, lazy="joined")
+
+
+class ZjUser(Base):
+    """查战绩独立账号：与记账系统的 users 完全解耦，只受配额约束。
+
+    quota_total / quota_used 以「次」为单位，一次 = 点一次「开始查询」，
+    与这次查询里包含多少名玩家无关。
+    """
+
+    __tablename__ = "zj_users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(64))
+    password_hash: Mapped[str] = mapped_column(String(128))
+    display_name: Mapped[str] = mapped_column(String(64), default="")
+    note: Mapped[str] = mapped_column(String(200), default="")
+    quota_total: Mapped[int] = mapped_column(Integer, default=0)
+    quota_used: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    password_changed_at: Mapped[str] = mapped_column(String(40))
+    last_login_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[str] = mapped_column(String(40))
+
+    @property
+    def quota_remaining(self) -> int:
+        return max(self.quota_total - self.quota_used, 0)
+
+    @property
+    def name(self) -> str:
+        return self.display_name or self.username
+
+
+class ZjBatch(Base):
+    """一次「开始查询」= 一个批次：开批时扣 1 次额度，之后只能查名单内玩家。
+
+    player_count 是名单人数快照，query_count 记录实际查询人次。
+    """
+
+    __tablename__ = "zj_batches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("zj_users.id"))
+    area_id: Mapped[int] = mapped_column(Integer)
+    all_count: Mapped[int] = mapped_column(Integer)
+    player_count: Mapped[int] = mapped_column(Integer, default=0)
+    query_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16), default="open")
+    created_at: Mapped[str] = mapped_column(String(40))
+    expires_at: Mapped[str] = mapped_column(String(40))
+    last_query_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    user: Mapped[ZjUser | None] = relationship(ZjUser, lazy="joined")
+
+    @property
+    def is_open(self) -> bool:
+        return self.status == "open"
+
+
+class ZjBatchPlayer(Base):
+    """批次名单：限定该批只能查这些玩家，挡住「扣 1 次后无限查」。"""
+
+    __tablename__ = "zj_batch_players"
+
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("zj_batches.id"), primary_key=True
+    )
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True)
+    nickname: Mapped[str] = mapped_column(String(80))
+
+
+class ZjQuery(Base):
+    """每次玩家查询一条流水：谁、哪个批次、查了谁、成功与否、查到多少场。"""
+
+    __tablename__ = "zj_queries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("zj_batches.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("zj_users.id"))
+    nickname: Mapped[str] = mapped_column(String(80))
+    ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    err_code: Mapped[str] = mapped_column(String(32), default="")
+    games: Mapped[int] = mapped_column(Integer, default=0)
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[str] = mapped_column(String(40))
+
+
+class ZjGrant(Base):
+    """配额调整流水：管理员加/减次数，operator_id 指向记账系统的开发者账号。"""
+
+    __tablename__ = "zj_grants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("zj_users.id"))
+    delta: Mapped[int] = mapped_column(Integer)
+    quota_after: Mapped[int] = mapped_column(Integer)
+    operator_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    note: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[str] = mapped_column(String(40))
+
+    operator: Mapped[User | None] = relationship(User, lazy="joined")

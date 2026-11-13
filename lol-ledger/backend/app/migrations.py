@@ -5,13 +5,21 @@ v3 引入开发者账号：users.is_superadmin + merchants.is_system，并预置
 「平台管理」商家承接超管账号，超管不属于任何门店。
 v4 引入现金保管与分红：merchants.custodian_user_id、batches.dividend_rate_percent、
 cash_handovers 交接表；同时把手动扣押并入退押金。
+v5 引入分红结算：dividend_settlements + dividend_settlement_batches。
+v6 引入分红方式：按茶水比例（percent）或每局固定金额（fixed），
+batches 增加 dividend_mode / dividend_fixed_cents 快照列。
+v7 引入排队登记（queue_entries），v8 取消开班/交班（场次直接统计）。
+v9 引入「查战绩」多用户版：zj_users / zj_batches / zj_batch_players /
+zj_queries / zj_grants。只新增表，不动任何既有表。
 
 迁移策略：
-- 全新库：按 v4 直接建表，写入默认商家、平台商家和默认配置。
+- 全新库：按 v6 直接建表，写入默认商家、平台商家和默认配置。
 - v1 库：先用 SQLite backup API 备份到 data/backups/pre-v2-*.db，
-  再在单事务里「旧表改名 → 建 v4 表 → 拷数据 → 删旧表 → 建索引」。
+  再在单事务里「旧表改名 → 建 v6 表 → 拷数据 → 删旧表 → 建索引」。
 - v2 库：备份到 pre-v3-*.db 加超管/平台商家，再备份到 pre-v4-*.db 加保管/分红。
 - v3 库：备份到 pre-v4-*.db，加保管/分红列和交接表，并转换手动扣押。
+- v4 库：备份到 pre-v5-*.db，只加分红结算两张表。
+- v5 库：备份到 pre-v6-*.db，加班次分红方式/固定金额列，并补上设置项。
 - 只做加表 / 加列 / 加索引 / 一次性重建，不删业务列、不改业务名。
 """
 
@@ -23,14 +31,17 @@ from datetime import datetime
 from pathlib import Path
 
 from app import db
+from app.defaults import DEFAULT_TOOL_LISTS
 from app.timeutil import now_text
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 10
 DEFAULT_MERCHANT_NAME = "默认商家"
 PLATFORM_MERCHANT_NAME = "平台管理"
 DEFAULT_DIVIDEND_RATE = 50
+DEFAULT_DIVIDEND_MODE = "percent"
+DEFAULT_DIVIDEND_FIXED_CENTS = 0
 
 # v1 里存在的表，迁移时先改名再重建
 LEGACY_TABLES: tuple[str, ...] = (
@@ -50,6 +61,8 @@ SETTING_KEYS: tuple[str, ...] = (
     "deposit_low_cents",
     "deposit_high_cents",
     "dividend_rate_percent",
+    "dividend_mode",
+    "dividend_fixed_cents",
 )
 
 DEFAULT_SETTINGS: tuple[tuple[str, str], ...] = (
@@ -57,6 +70,8 @@ DEFAULT_SETTINGS: tuple[tuple[str, str], ...] = (
     ("deposit_low_cents", "3000"),
     ("deposit_high_cents", "6000"),
     ("dividend_rate_percent", "50"),
+    ("dividend_mode", "percent"),
+    ("dividend_fixed_cents", "0"),
 )
 
 CASH_HANDOVER_TABLE = """
@@ -76,6 +91,199 @@ CREATE TABLE IF NOT EXISTS cash_handovers (
     created_at          TEXT    NOT NULL
 )
 """
+
+DIVIDEND_SETTLEMENT_TABLE = """
+CREATE TABLE IF NOT EXISTS dividend_settlements (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    merchant_id           INTEGER NOT NULL REFERENCES merchants(id),
+    user_id               INTEGER NOT NULL REFERENCES users(id),
+    username_snapshot     TEXT    NOT NULL,
+    display_name_snapshot TEXT    NOT NULL DEFAULT '',
+    period_start          TEXT    NOT NULL,
+    period_end            TEXT    NOT NULL,
+    session_count         INTEGER NOT NULL DEFAULT 0,
+    player_times          INTEGER NOT NULL DEFAULT 0,
+    tea_cents             INTEGER NOT NULL DEFAULT 0,
+    dividend_cents        INTEGER NOT NULL DEFAULT 0,
+    note                  TEXT    NOT NULL DEFAULT '',
+    settled_by            INTEGER NOT NULL REFERENCES users(id),
+    created_at            TEXT    NOT NULL
+)
+"""
+
+DIVIDEND_SETTLEMENT_BATCH_TABLE = """
+CREATE TABLE IF NOT EXISTS dividend_settlement_batches (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    settlement_id  INTEGER NOT NULL REFERENCES dividend_settlements(id),
+    batch_id       INTEGER NOT NULL REFERENCES batches(id),
+    user_id        INTEGER NOT NULL REFERENCES users(id),
+    merchant_id    INTEGER NOT NULL REFERENCES merchants(id),
+    session_count  INTEGER NOT NULL DEFAULT 0,
+    player_times   INTEGER NOT NULL DEFAULT 0,
+    tea_cents      INTEGER NOT NULL DEFAULT 0,
+    dividend_cents INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (batch_id, user_id)
+)
+"""
+
+DIVIDEND_INDEX_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE INDEX IF NOT EXISTS ix_settlements_merchant_period
+        ON dividend_settlements(merchant_id, period_end DESC, id DESC)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_settlements_user
+        ON dividend_settlements(merchant_id, user_id, period_end DESC)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_settlement_batches_settlement
+        ON dividend_settlement_batches(settlement_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_settlement_batches_merchant
+        ON dividend_settlement_batches(merchant_id, batch_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_settlement_batches_user
+        ON dividend_settlement_batches(merchant_id, user_id)
+    """,
+)
+
+# 小工具：排队登记（v7）
+QUEUE_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS queue_entries (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        merchant_id INTEGER NOT NULL REFERENCES merchants(id),
+        game_id     TEXT    NOT NULL,
+        note        TEXT    NOT NULL DEFAULT '',
+        status      TEXT    NOT NULL DEFAULT 'waiting'
+                    CHECK (status IN ('waiting', 'playing', 'done', 'cancelled')),
+        operator_id INTEGER REFERENCES users(id),
+        created_at  TEXT    NOT NULL,
+        called_at   TEXT,
+        finished_at TEXT
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_queue_merchant_status
+        ON queue_entries(merchant_id, status, created_at)
+    """,
+)
+
+# 查战绩多用户版（v9）：独立账号 + 批次 + 批次名单 + 用量 + 充值流水。
+# 与记账系统完全解耦：zj_users 不关联 merchants/users，只有 zj_grants.operator_id
+# 指向记账系统的开发者账号（谁加的次数）。
+ZJ_TABLE_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS zj_users (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        username            TEXT    NOT NULL,
+        password_hash       TEXT    NOT NULL,
+        display_name        TEXT    NOT NULL DEFAULT '',
+        note                TEXT    NOT NULL DEFAULT '',
+        quota_total         INTEGER NOT NULL DEFAULT 0 CHECK (quota_total >= 0),
+        quota_used          INTEGER NOT NULL DEFAULT 0 CHECK (quota_used >= 0),
+        is_active           INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+        password_changed_at TEXT    NOT NULL,
+        last_login_at       TEXT,
+        created_at          TEXT    NOT NULL,
+        updated_at          TEXT    NOT NULL,
+        CHECK (quota_used <= quota_total)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS zj_batches (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id        INTEGER NOT NULL REFERENCES zj_users(id),
+        area_id        INTEGER NOT NULL,
+        all_count      INTEGER NOT NULL CHECK (all_count BETWEEN 1 AND 100),
+        player_count   INTEGER NOT NULL CHECK (player_count >= 0),
+        query_count    INTEGER NOT NULL DEFAULT 0 CHECK (query_count >= 0),
+        status         TEXT    NOT NULL DEFAULT 'open'
+                       CHECK (status IN ('open', 'closed')),
+        created_at     TEXT    NOT NULL,
+        expires_at     TEXT    NOT NULL,
+        last_query_at  TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS zj_batch_players (
+        batch_id INTEGER NOT NULL REFERENCES zj_batches(id) ON DELETE CASCADE,
+        seq      INTEGER NOT NULL,
+        nickname TEXT    NOT NULL,
+        PRIMARY KEY (batch_id, seq)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS zj_queries (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_id   INTEGER NOT NULL REFERENCES zj_batches(id),
+        user_id    INTEGER NOT NULL REFERENCES zj_users(id),
+        nickname   TEXT    NOT NULL,
+        ok         INTEGER NOT NULL DEFAULT 0 CHECK (ok IN (0, 1)),
+        err_code   TEXT    NOT NULL DEFAULT '',
+        games      INTEGER NOT NULL DEFAULT 0 CHECK (games >= 0),
+        ip         TEXT    NOT NULL DEFAULT '',
+        created_at TEXT    NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS zj_grants (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES zj_users(id),
+        delta       INTEGER NOT NULL,
+        quota_after INTEGER NOT NULL CHECK (quota_after >= 0),
+        operator_id INTEGER NOT NULL REFERENCES users(id),
+        note        TEXT    NOT NULL DEFAULT '',
+        created_at  TEXT    NOT NULL
+    )
+    """,
+)
+
+ZJ_INDEX_STATEMENTS: tuple[str, ...] = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_zj_users_username ON zj_users(username)",
+    "CREATE INDEX IF NOT EXISTS ix_zj_batches_user ON zj_batches(user_id, id DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_zj_queries_user ON zj_queries(user_id, created_at DESC, id DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_zj_queries_batch ON zj_queries(batch_id, nickname)",
+    "CREATE INDEX IF NOT EXISTS ix_zj_grants_user ON zj_grants(user_id, id DESC)",
+)
+
+# 迁移与全新安装共用同一份 DDL，顺序固定：先建表，再建索引。
+ZJ_STATEMENTS: tuple[str, ...] = ZJ_TABLE_STATEMENTS + ZJ_INDEX_STATEMENTS
+
+# 小工具：常用名单（v10）
+TOOL_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS tool_lists (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        merchant_id INTEGER NOT NULL REFERENCES merchants(id),
+        name        TEXT    NOT NULL,
+        sort_order  INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT    NOT NULL,
+        updated_at  TEXT    NOT NULL
+    )
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_tool_lists_name
+        ON tool_lists(merchant_id, name)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS tool_items (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        list_id     INTEGER NOT NULL REFERENCES tool_lists(id) ON DELETE CASCADE,
+        merchant_id INTEGER NOT NULL REFERENCES merchants(id),
+        content     TEXT    NOT NULL,
+        note        TEXT    NOT NULL DEFAULT '',
+        sort_order  INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT    NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_tool_items_list
+        ON tool_items(list_id, sort_order, id)
+    """,
+)
 
 TABLE_STATEMENTS: tuple[str, ...] = (
     """
@@ -145,6 +353,9 @@ TABLE_STATEMENTS: tuple[str, ...] = (
         net_change_cents         INTEGER,
         deposit_total_cents      INTEGER,
         dividend_rate_percent    INTEGER NOT NULL DEFAULT 50,
+        dividend_mode            TEXT    NOT NULL DEFAULT 'percent'
+                                 CHECK (dividend_mode IN ('percent', 'fixed')),
+        dividend_fixed_cents     INTEGER NOT NULL DEFAULT 0,
         CHECK ((status = 'open' AND closed_at IS NULL AND closed_by IS NULL)
             OR (status = 'closed' AND closed_at IS NOT NULL AND closed_by IS NOT NULL))
     )
@@ -153,7 +364,6 @@ TABLE_STATEMENTS: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS sessions (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
         merchant_id   INTEGER NOT NULL REFERENCES merchants(id),
-        batch_id      INTEGER NOT NULL REFERENCES batches(id),
         name          TEXT    NOT NULL DEFAULT '',
         played_at     TEXT    NOT NULL,
         tea_fee_cents INTEGER NOT NULL CHECK (tea_fee_cents >= 0),
@@ -187,8 +397,6 @@ TABLE_STATEMENTS: tuple[str, ...] = (
                       ELSE -amount_cents END),
         CHECK ((reason IN ('normal_deduct', 'manual_deduct') AND amount_cents >= 0)
             OR (reason NOT IN ('normal_deduct', 'manual_deduct') AND amount_cents > 0)),
-        CHECK ((reason = 'normal_deduct' AND session_id IS NOT NULL)
-            OR reason <> 'normal_deduct'),
         CHECK ((reason IN ('transfer_out', 'transfer_in')
                 AND counterparty_player_id IS NOT NULL
                 AND transfer_group_id IS NOT NULL)
@@ -231,6 +439,10 @@ TABLE_STATEMENTS: tuple[str, ...] = (
     )
     """,
     CASH_HANDOVER_TABLE,
+    DIVIDEND_SETTLEMENT_TABLE,
+    DIVIDEND_SETTLEMENT_BATCH_TABLE,
+    *QUEUE_STATEMENTS,
+    *TOOL_STATEMENTS,
 )
 
 INDEX_STATEMENTS: tuple[str, ...] = (
@@ -255,11 +467,11 @@ INDEX_STATEMENTS: tuple[str, ...] = (
         ON batches(merchant_id) WHERE status = 'open'
     """,
     "CREATE INDEX IF NOT EXISTS ix_batches_opened ON batches(merchant_id, opened_at DESC, id DESC)",
-    """
-    CREATE INDEX IF NOT EXISTS ix_sessions_batch
-        ON sessions(merchant_id, batch_id, played_at DESC, id DESC)
-    """,
     "CREATE INDEX IF NOT EXISTS ix_sessions_played ON sessions(merchant_id, played_at DESC, id DESC)",
+    """
+    CREATE INDEX IF NOT EXISTS ix_sessions_operator
+        ON sessions(merchant_id, operator_id, played_at)
+    """,
     """
     CREATE INDEX IF NOT EXISTS ix_session_players_player
         ON session_players(player_id, id DESC)
@@ -328,9 +540,9 @@ COPY_STATEMENTS: tuple[tuple[str, str], ...] = (
     (
         "sessions",
         """
-        INSERT INTO sessions (id, merchant_id, batch_id, name, played_at,
+        INSERT INTO sessions (id, merchant_id, name, played_at,
                               tea_fee_cents, note, operator_id, player_count, created_at)
-        SELECT id, :mid, batch_id, name, played_at, tea_fee_cents, note,
+        SELECT id, :mid, name, played_at, tea_fee_cents, note,
                operator_id, player_count, created_at
         FROM sessions__old
         """,
@@ -342,7 +554,7 @@ COPY_STATEMENTS: tuple[tuple[str, str], ...] = (
                             amount_cents, balance_before_cents, balance_after_cents,
                             counterparty_player_id, transfer_group_id, operator_id,
                             note, created_at)
-        SELECT id, :mid, player_id, batch_id, session_id, reason, amount_cents,
+        SELECT id, :mid, player_id, NULL, NULL, reason, amount_cents,
                balance_before_cents, balance_after_cents, counterparty_player_id,
                transfer_group_id, operator_id, note, created_at
         FROM ledger__old
@@ -485,6 +697,21 @@ def _seed_dividend_rate(conn: sqlite3.Connection) -> None:
     )
 
 
+def _seed_dividend_mode(conn: sqlite3.Connection) -> None:
+    """v6：老商家默认按比例分红，固定金额 0，行为与升级前一致。"""
+    stamp = now_text()
+    conn.execute(
+        "INSERT OR IGNORE INTO merchant_settings (merchant_id, key, value, updated_at) "
+        "SELECT id, 'dividend_mode', ?, ? FROM merchants WHERE is_system = 0",
+        (DEFAULT_DIVIDEND_MODE, stamp),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO merchant_settings (merchant_id, key, value, updated_at) "
+        "SELECT id, 'dividend_fixed_cents', ?, ? FROM merchants WHERE is_system = 0",
+        (str(DEFAULT_DIVIDEND_FIXED_CENTS), stamp),
+    )
+
+
 def _set_initial_custodians(conn: sqlite3.Connection) -> None:
     """老库没有交接记录：有进行中班次就给开班人，否则给第一个启用的管理员。"""
     conn.execute(
@@ -528,8 +755,13 @@ def _create_fresh(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
         merchant_id = _insert_merchant(conn, DEFAULT_MERCHANT_NAME)
         _seed_settings(conn, merchant_id)
+        _seed_tool_lists(conn)
         platform_id = _ensure_platform_merchant(conn)
-        for statement in INDEX_STATEMENTS + HANDOVER_INDEX_STATEMENTS:
+        for statement in (
+            INDEX_STATEMENTS + HANDOVER_INDEX_STATEMENTS + DIVIDEND_INDEX_STATEMENTS
+        ):
+            conn.execute(statement)
+        for statement in ZJ_STATEMENTS:
             conn.execute(statement)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         _assert_foreign_keys(conn)
@@ -578,7 +810,20 @@ def _upgrade_v1(conn: sqlite3.Connection, db_path: Path) -> None:
         _set_initial_custodians(conn)
         _convert_manual_deduct(conn)
 
-        for statement in INDEX_STATEMENTS + HANDOVER_INDEX_STATEMENTS:
+        # v8 起取消班次：清空场次/班次历史，押金流水保留但断开关联
+        conn.execute("DELETE FROM session_players")
+        conn.execute("DELETE FROM sessions")
+        conn.execute("DELETE FROM cash_handovers")
+        conn.execute("DELETE FROM dividend_settlement_batches")
+        conn.execute("DELETE FROM dividend_settlements")
+        conn.execute("UPDATE ledger SET session_id = NULL, batch_id = NULL")
+        conn.execute("DELETE FROM batches")
+
+        for statement in (
+            INDEX_STATEMENTS + HANDOVER_INDEX_STATEMENTS + DIVIDEND_INDEX_STATEMENTS
+        ):
+            conn.execute(statement)
+        for statement in ZJ_STATEMENTS:
             conn.execute(statement)
 
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -644,10 +889,281 @@ def _upgrade_v3_to_v4(conn: sqlite3.Connection, db_path: Path) -> None:
         _convert_manual_deduct(conn)
         for statement in HANDOVER_INDEX_STATEMENTS:
             conn.execute(statement)
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        conn.execute("PRAGMA user_version = 4")
         _assert_foreign_keys(conn)
         conn.execute("COMMIT")
         logger.info("v3 → v4 迁移完成：交接表、保管人、分红比例就绪")
+    except Exception:
+        _rollback(conn)
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _upgrade_v4_to_v5(conn: sqlite3.Connection, db_path: Path) -> None:
+    """v4 → v5：只新增分红结算表和索引，不动现有业务数据。"""
+    backup = _backup(conn, db_path, "pre-v5")
+    logger.info("迁移前已备份：%s", backup)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(DIVIDEND_SETTLEMENT_TABLE)
+        conn.execute(DIVIDEND_SETTLEMENT_BATCH_TABLE)
+        for statement in DIVIDEND_INDEX_STATEMENTS:
+            conn.execute(statement)
+        conn.execute("PRAGMA user_version = 5")
+        _assert_foreign_keys(conn)
+        conn.execute("COMMIT")
+        logger.info("v4 → v5 迁移完成：分红结算表就绪")
+    except Exception:
+        _rollback(conn)
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _upgrade_v5_to_v6(conn: sqlite3.Connection, db_path: Path) -> None:
+    """v5 → v6：分红方式（比例/每局固定）与固定金额，班次存快照。"""
+    backup = _backup(conn, db_path, "pre-v6")
+    logger.info("迁移前已备份：%s", backup)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not _column_exists(conn, "batches", "dividend_mode"):
+            conn.execute(
+                "ALTER TABLE batches ADD COLUMN dividend_mode TEXT NOT NULL DEFAULT 'percent'"
+            )
+        if not _column_exists(conn, "batches", "dividend_fixed_cents"):
+            conn.execute(
+                "ALTER TABLE batches ADD COLUMN dividend_fixed_cents INTEGER NOT NULL DEFAULT 0"
+            )
+        _seed_dividend_mode(conn)
+        conn.execute("PRAGMA user_version = 6")
+        _assert_foreign_keys(conn)
+        conn.execute("COMMIT")
+        logger.info("v5 → v6 迁移完成：分红方式与固定金额就绪")
+    except Exception:
+        _rollback(conn)
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _upgrade_v6_to_v7(conn: sqlite3.Connection, db_path: Path) -> None:
+    """v6 → v7：新增排队登记表（小工具 → 排队登记）。"""
+    backup = _backup(conn, db_path, "pre-v7")
+    logger.info("迁移前已备份：%s", backup)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for statement in QUEUE_STATEMENTS:
+            conn.execute(statement)
+        conn.execute("PRAGMA user_version = 7")
+        _assert_foreign_keys(conn)
+        conn.execute("COMMIT")
+        logger.info("v6 → v7 迁移完成：排队登记表就绪")
+    except Exception:
+        _rollback(conn)
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _upgrade_v7_to_v8(conn: sqlite3.Connection, db_path: Path) -> None:
+    """v7 → v8：取消开班/交班。
+
+    - 场次不再归属班次（重建 sessions 表，去掉 batch_id）
+    - 清空班次、现金交接、分红结算历史（按约定重来，玩家和押金流水保留）
+    - 押金流水保留，但解除与班次/场次的关联
+    """
+    backup = _backup(conn, db_path, "pre-v8")
+    logger.info("迁移前已备份：%s", backup)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("DELETE FROM session_players")
+        conn.execute("DELETE FROM dividend_settlement_batches")
+        conn.execute("DELETE FROM dividend_settlements")
+        conn.execute("DELETE FROM cash_handovers")
+
+        # 重建 ledger：保留全部流水，但断开 batch/session 关联，
+        # 并去掉「normal_deduct 必须带 session_id」的历史约束。
+        conn.execute(
+            """
+            CREATE TABLE ledger__new (
+                id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+                merchant_id            INTEGER NOT NULL REFERENCES merchants(id),
+                player_id              INTEGER NOT NULL REFERENCES players(id),
+                batch_id               INTEGER REFERENCES batches(id),
+                session_id             INTEGER REFERENCES sessions(id),
+                reason                 TEXT    NOT NULL CHECK (reason IN (
+                                           'normal_deduct', 'manual_deduct', 'refund',
+                                           'add_deposit', 'transfer_out', 'transfer_in')),
+                amount_cents           INTEGER NOT NULL,
+                balance_before_cents   INTEGER NOT NULL,
+                balance_after_cents    INTEGER NOT NULL,
+                counterparty_player_id INTEGER REFERENCES players(id),
+                transfer_group_id      TEXT,
+                operator_id            INTEGER NOT NULL REFERENCES users(id),
+                note                   TEXT    NOT NULL DEFAULT '',
+                created_at             TEXT    NOT NULL,
+
+                CHECK (balance_after_cents = balance_before_cents
+                       + CASE WHEN reason IN ('add_deposit', 'transfer_in') THEN amount_cents
+                              ELSE -amount_cents END),
+                CHECK ((reason IN ('normal_deduct', 'manual_deduct') AND amount_cents >= 0)
+                    OR (reason NOT IN ('normal_deduct', 'manual_deduct') AND amount_cents > 0)),
+                CHECK ((reason IN ('transfer_out', 'transfer_in')
+                        AND counterparty_player_id IS NOT NULL
+                        AND transfer_group_id IS NOT NULL)
+                    OR reason NOT IN ('transfer_out', 'transfer_in'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO ledger__new (id, merchant_id, player_id, batch_id, session_id, reason,
+                                     amount_cents, balance_before_cents, balance_after_cents,
+                                     counterparty_player_id, transfer_group_id, operator_id,
+                                     note, created_at)
+            SELECT id, merchant_id, player_id, NULL, NULL, reason,
+                   amount_cents, balance_before_cents, balance_after_cents,
+                   counterparty_player_id, transfer_group_id, operator_id,
+                   note, created_at
+            FROM ledger
+            """
+        )
+        conn.execute("DROP TABLE ledger")
+        conn.execute("ALTER TABLE ledger__new RENAME TO ledger")
+        for statement in (
+            "CREATE INDEX IF NOT EXISTS ix_ledger_player ON ledger(merchant_id, player_id, id DESC)",
+            "CREATE INDEX IF NOT EXISTS ix_ledger_batch ON ledger(merchant_id, batch_id, id DESC)",
+            "CREATE INDEX IF NOT EXISTS ix_ledger_session ON ledger(session_id)",
+            "CREATE INDEX IF NOT EXISTS ix_ledger_created ON ledger(merchant_id, created_at DESC, id DESC)",
+            "CREATE INDEX IF NOT EXISTS ix_ledger_transfer ON ledger(transfer_group_id)",
+            """
+            CREATE INDEX IF NOT EXISTS ix_ledger_reason_time
+                ON ledger(merchant_id, reason, created_at DESC)
+            """,
+        ):
+            conn.execute(statement)
+
+        conn.execute("DELETE FROM sessions")
+        conn.execute("DROP TABLE IF EXISTS sessions")
+        conn.execute(
+            """
+            CREATE TABLE sessions (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                merchant_id   INTEGER NOT NULL REFERENCES merchants(id),
+                name          TEXT    NOT NULL DEFAULT '',
+                played_at     TEXT    NOT NULL,
+                tea_fee_cents INTEGER NOT NULL CHECK (tea_fee_cents >= 0),
+                note          TEXT    NOT NULL DEFAULT '',
+                operator_id   INTEGER NOT NULL REFERENCES users(id),
+                player_count  INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT    NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX ix_sessions_played ON sessions(merchant_id, played_at DESC, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX ix_sessions_operator ON sessions(merchant_id, operator_id, played_at)"
+        )
+        conn.execute("DELETE FROM batches")
+        conn.execute("PRAGMA user_version = 8")
+        _assert_foreign_keys(conn)
+        conn.execute("COMMIT")
+        logger.info("v7 → v8 迁移完成：已取消班次，场次改为直接统计")
+    except Exception:
+        _rollback(conn)
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _upgrade_v8_to_v9(conn: sqlite3.Connection, db_path: Path) -> None:
+    """v8 → v9：新增「查战绩」多用户版五张表。
+
+    只建表建索引，不改任何既有表：zj_users 独立于 merchants/users，
+    zj_grants.operator_id 仅记录是哪个开发者账号加的次数。
+    旧代码不认识这些表，回滚时保留它们即可，不影响记账逻辑。
+    """
+    backup = _backup(conn, db_path, "pre-v9")
+    logger.info("迁移前已备份：%s", backup)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for statement in ZJ_STATEMENTS:
+            conn.execute(statement)
+        conn.execute("PRAGMA user_version = 9")
+        _assert_foreign_keys(conn)
+        conn.execute("COMMIT")
+        logger.info("v8 → v9 迁移完成：查战绩账号、批次与配额表就绪")
+    except Exception:
+        _rollback(conn)
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _seed_tool_lists(conn: sqlite3.Connection) -> None:
+    """给每个非系统商家预置分类与条目；已存在的分类跳过（幂等）。"""
+    stamp = now_text()
+    merchants = [
+        row[0]
+        for row in conn.execute(
+            "select id from merchants where is_system = 0 order by id"
+        ).fetchall()
+    ]
+    for merchant_id in merchants:
+        for index, (name, items) in enumerate(DEFAULT_TOOL_LISTS):
+            exists = conn.execute(
+                "select id from tool_lists where merchant_id = ? and name = ?",
+                (merchant_id, name),
+            ).fetchone()
+            if exists:
+                continue
+            cursor = conn.execute(
+                """
+                insert into tool_lists (merchant_id, name, sort_order, created_at, updated_at)
+                values (?, ?, ?, ?, ?)
+                """,
+                (merchant_id, name, index, stamp, stamp),
+            )
+            list_id = int(cursor.lastrowid)
+            for order, content in enumerate(items):
+                conn.execute(
+                    """
+                    insert into tool_items
+                        (list_id, merchant_id, content, note, sort_order, created_at)
+                    values (?, ?, ?, '', ?, ?)
+                    """,
+                    (list_id, merchant_id, content, order, stamp),
+                )
+
+
+def _upgrade_v9_to_v10(conn: sqlite3.Connection, db_path: Path) -> None:
+    """v9 → v10：新增「常用名单」小工具的两张表，并预置分类与条目。"""
+    backup = _backup(conn, db_path, "pre-v10")
+    logger.info("迁移前已备份：%s", backup)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for statement in TOOL_STATEMENTS:
+            conn.execute(statement)
+        _seed_tool_lists(conn)
+        conn.execute("PRAGMA user_version = 10")
+        _assert_foreign_keys(conn)
+        conn.execute("COMMIT")
+        logger.info("v9 → v10 迁移完成：常用名单就绪")
     except Exception:
         _rollback(conn)
         raise
@@ -671,7 +1187,20 @@ def ensure_schema() -> None:
             return
         if version < 3:
             _upgrade_v2_to_v3(conn, path)
-        _upgrade_v3_to_v4(conn, path)
+        if version < 4:
+            _upgrade_v3_to_v4(conn, path)
+        if version < 5:
+            _upgrade_v4_to_v5(conn, path)
+        if version < 6:
+            _upgrade_v5_to_v6(conn, path)
+        if version < 7:
+            _upgrade_v6_to_v7(conn, path)
+        if version < 8:
+            _upgrade_v7_to_v8(conn, path)
+        if version < 9:
+            _upgrade_v8_to_v9(conn, path)
+        if version < 10:
+            _upgrade_v9_to_v10(conn, path)
     finally:
         conn.close()
 

@@ -31,6 +31,16 @@ class Settings(BaseSettings):
     ai_model: str = "deepseek-flash"
     ai_timeout_seconds: float = 25.0
 
+    # 查战绩（第三方站点）只由后端调用：token/账号密码只放服务端 .env。
+    lzyumi_base_url: str = "https://l.lzyumi.top/lzyumi/lol/info"
+    lzyumi_token: str = ""
+    lzyumi_user: str = ""
+    lzyumi_pwd: str = ""
+    zj_min_interval_seconds: float = 2.5
+    zj_batch_max_players: int = 10
+    zj_batch_ttl_minutes: int = 30
+    zj_cache_ttl_seconds: int = 300
+
     @property
     def using_dev_secret(self) -> bool:
         return self.jwt_secret == DEV_SECRET
@@ -38,6 +48,14 @@ class Settings(BaseSettings):
     @property
     def ai_ready(self) -> bool:
         return bool(self.ai_enabled and self.ai_api_key.strip())
+
+    @property
+    def lzyumi_ready(self) -> bool:
+        """有 token 或有能自动登录的账号密码，才算可用。"""
+        return bool(
+            self.lzyumi_token.strip()
+            or (self.lzyumi_user.strip() and self.lzyumi_pwd.strip())
+        )
 
     @property
     def cors_origin_list(self) -> list[str]:

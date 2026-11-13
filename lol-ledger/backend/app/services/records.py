@@ -21,20 +21,21 @@ from app.services.batches import (
 )
 from app.services.players import get_player
 from app.services.sessions import list_sessions
-from app.timeutil import day_after_text, day_start_text
+from app.timeutil import bound_end_text, bound_start_text
 
 SORT_OPTIONS = {"created_at_desc", "created_at_asc", "amount_desc"}
 
 
 def _date_conditions(column, date_from: str | None, date_to: str | None) -> list:
+    """按时间区间过滤，支持纯日期和精确到分钟两种写法。"""
     conditions = []
     try:
         if date_from:
-            conditions.append(column >= day_start_text(date_cls.fromisoformat(date_from)))
+            conditions.append(column >= bound_start_text(date_from))
         if date_to:
-            conditions.append(column < day_after_text(date_cls.fromisoformat(date_to)))
+            conditions.append(column <= bound_end_text(date_to))
     except ValueError as exc:
-        raise AppError("日期格式不正确") from exc
+        raise AppError("时间格式不正确，应为 YYYY-MM-DD 或 YYYY-MM-DD HH:MM") from exc
     return conditions
 
 
@@ -124,7 +125,6 @@ def list_session_records(
     merchant_id: int,
     *,
     keyword: str = "",
-    batch_id: int | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
     page: int = 1,
@@ -133,7 +133,6 @@ def list_session_records(
     return list_sessions(
         session,
         merchant_id,
-        batch_id=batch_id,
         keyword=keyword,
         date_from=date_from,
         date_to=date_to,
@@ -214,14 +213,27 @@ def export_batch_csv(session: Session, batch_id: int, merchant_id: int) -> str:
         writer.writerow(["退押金（元）", f"{summary['refund_total_cents'] / 100:.2f}"])
         writer.writerow(["划转（元）", f"{summary['transfer_out_total_cents'] / 100:.2f}"])
         writer.writerow(["期末总押金（元）", f"{summary['deposit_total_cents'] / 100:.2f}"])
-    rate = (
-        int(batch.dividend_rate_percent or 50)
-        if batch.status == "closed"
-        else options.dividend_rate(session, merchant_id)
+    if batch.status == "closed":
+        rate = int(batch.dividend_rate_percent or 50)
+        mode = batch.dividend_mode or "percent"
+        fixed_cents = int(batch.dividend_fixed_cents or 0)
+    else:
+        rate = options.dividend_rate(session, merchant_id)
+        mode = options.dividend_mode(session, merchant_id)
+        fixed_cents = options.dividend_fixed_cents(session, merchant_id)
+    dividend_title = (
+        f"分红（每局 {fixed_cents / 100:.2f} 元）" if mode == "fixed" else f"分红（{rate}%）"
     )
     writer.writerow([])
-    writer.writerow(["操作人", "局数", "人次", "茶水（元）", f"分红（{rate}%）"])
-    for row in operator_stats(session, batch_id, merchant_id, rate):
+    writer.writerow(["操作人", "局数", "人次", "茶水（元）", dividend_title])
+    for row in operator_stats(
+        session,
+        batch_id,
+        merchant_id,
+        mode=mode,
+        rate_percent=rate,
+        fixed_cents=fixed_cents,
+    ):
         writer.writerow(
             [
                 (row["user"] or {}).get("display_name", ""),

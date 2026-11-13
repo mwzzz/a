@@ -159,8 +159,8 @@ async function submit() {
 .rules {
   margin-bottom: 14px;
   padding: 10px 12px;
-  background: #101319;
-  border: 1px solid #1c2028;
+  background: var(--app-bg-subtle);
+  border: 1px solid var(--app-border);
   border-radius: 8px;
   font-size: 12px;
   line-height: 1.8;

@@ -7,25 +7,32 @@
 
 from __future__ import annotations
 
-from sqlalchemy import func, select
+import json
+import sqlite3
+
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from app import db as dbmod
 from app.deps import Actor
 from app.errors import AppError, ForbiddenError, NotFoundError
-from app.models import Merchant, Player, User
+from app.models import (
+    Batch,
+    CashHandover,
+    DividendSettlement,
+    DividendSettlementBatch,
+    GameSession,
+    LedgerEntry,
+    Merchant,
+    Player,
+    SessionPlayer,
+    User,
+)
 from app.security import hash_password, validate_password_strength
-from app.services import custody, options
+from app.services import custody, options, tool_lists
 from app.services.audit import write_audit
 from app.services.users import normalize_username, user_row
-from app.timeutil import now_text
-
-DEFAULT_MERCHANT_SETTINGS = (
-    ("last_tea_cents", 200),
-    ("deposit_low_cents", 3000),
-    ("deposit_high_cents", 6000),
-    ("dividend_rate_percent", 50),
-)
-
+from app.timeutil import now_cn, now_text
 
 def _ensure_superadmin(actor: Actor) -> None:
     if not actor.is_superadmin:
@@ -171,8 +178,8 @@ def create_merchant(
     )
     session.add(merchant)
     session.flush()
-    for key, value in DEFAULT_MERCHANT_SETTINGS:
-        options.set_int(session, merchant.id, key, value, actor.id)
+    options.seed_defaults(session, merchant.id, actor.id)
+    tool_lists.create_default_lists(session, merchant.id)
 
     admin = None
     if admin_username:
@@ -400,3 +407,175 @@ def reset_password(
 
 def account_row(user: User) -> dict:
     return user_row(user)
+
+
+# ---------------------------------------------------------------- 清空商家经营数据
+# 只删「玩家 / 场次 / 班次 / 流水 / 交接 / 分红结算」，
+# 保留商家、账号、店铺设置与审计日志（清空动作本身也写一条审计）。
+
+
+def _purge_counts(session: Session, merchant_id: int) -> dict:
+    session_ids = select(GameSession.id).where(GameSession.merchant_id == merchant_id)
+
+    def count(stmt) -> int:
+        return int(session.scalar(stmt) or 0)
+
+    return {
+        "players": count(
+            select(func.count()).select_from(Player).where(Player.merchant_id == merchant_id)
+        ),
+        "players_alive": count(
+            select(func.count())
+            .select_from(Player)
+            .where(Player.merchant_id == merchant_id, Player.deleted_at.is_(None))
+        ),
+        "batches": count(
+            select(func.count()).select_from(Batch).where(Batch.merchant_id == merchant_id)
+        ),
+        "batches_open": count(
+            select(func.count())
+            .select_from(Batch)
+            .where(Batch.merchant_id == merchant_id, Batch.status == "open")
+        ),
+        "sessions": count(
+            select(func.count())
+            .select_from(GameSession)
+            .where(GameSession.merchant_id == merchant_id)
+        ),
+        "session_players": count(
+            select(func.count())
+            .select_from(SessionPlayer)
+            .where(SessionPlayer.session_id.in_(session_ids))
+        ),
+        "ledger": count(
+            select(func.count())
+            .select_from(LedgerEntry)
+            .where(LedgerEntry.merchant_id == merchant_id)
+        ),
+        "handovers": count(
+            select(func.count())
+            .select_from(CashHandover)
+            .where(CashHandover.merchant_id == merchant_id)
+        ),
+        "settlements": count(
+            select(func.count())
+            .select_from(DividendSettlement)
+            .where(DividendSettlement.merchant_id == merchant_id)
+        ),
+    }
+
+
+def purge_preview(session: Session, actor: Actor, merchant_id: int) -> dict:
+    """清空前预览：删多少、留什么、当前在库多少。只读。"""
+    _ensure_superadmin(actor)
+    merchant = _merchant_or_404(session, merchant_id)
+    counts = _purge_counts(session, merchant_id)
+    open_batch = session.scalar(
+        select(Batch)
+        .where(Batch.merchant_id == merchant_id, Batch.status == "open")
+        .order_by(Batch.id.desc())
+    )
+    warnings: list[str] = []
+    if counts["batches_open"]:
+        warnings.append("有进行中的班次，会连同在库现金记录一起删除")
+    if counts["players_alive"]:
+        warnings.append("玩家押金余额会一并清空，清空后无法对账历史")
+    if counts["settlements"]:
+        warnings.append("已结算的分红记录会被删除，历史工资凭证需自行留存")
+    return {
+        "merchant": {
+            "id": merchant.id,
+            "name": merchant.name,
+            "status": merchant.status,
+        },
+        "counts": counts,
+        "deposit_total_cents": int(
+            session.scalar(
+                select(func.coalesce(func.sum(Player.deposit_cents), 0)).where(
+                    Player.merchant_id == merchant_id,
+                    Player.deleted_at.is_(None),
+                )
+            )
+            or 0
+        ),
+        "open_batch": (
+            {"id": open_batch.id, "opened_at": open_batch.opened_at} if open_batch else None
+        ),
+        "keep": {"accounts": True, "settings": True, "merchant": True},
+        "warnings": warnings,
+    }
+
+
+def _backup_before_purge(merchant_id: int) -> str:
+    """整库备份到 backups/pre-purge-<商家>-<时间>.db，返回文件名。失败即中止清空。"""
+    source = dbmod.current_path().resolve()
+    folder = source.parent / "backups"
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = now_cn().strftime("%Y%m%d-%H%M%S")
+    target = folder / f"pre-purge-{merchant_id}-{stamp}.db"
+
+    src = sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True)
+    try:
+        dst = sqlite3.connect(str(target))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    return target.name
+
+
+def purge_merchant_data(
+    session: Session,
+    actor: Actor,
+    merchant_id: int,
+    *,
+    confirm_name: str,
+    note: str = "",
+    ip: str = "",
+) -> dict:
+    """清空指定商家的经营数据。不可恢复，删除前整库备份。"""
+    _ensure_superadmin(actor)
+    merchant = _merchant_or_404(session, merchant_id)
+    if merchant.id == actor.merchant_id:
+        raise AppError("不能清空自己所在的商家")
+    if (confirm_name or "").strip() != merchant.name:
+        raise AppError("商家名不一致，未执行清空")
+
+    counts = _purge_counts(session, merchant_id)
+    backup = _backup_before_purge(merchant_id)
+
+    session_ids = select(GameSession.id).where(GameSession.merchant_id == merchant_id)
+    # 顺序：分红/交接 → 场次明细 → 流水 → 场次 → 班次 → 玩家
+    session.execute(
+        delete(DividendSettlementBatch).where(
+            DividendSettlementBatch.merchant_id == merchant_id
+        )
+    )
+    session.execute(
+        delete(DividendSettlement).where(DividendSettlement.merchant_id == merchant_id)
+    )
+    session.execute(delete(CashHandover).where(CashHandover.merchant_id == merchant_id))
+    session.execute(delete(SessionPlayer).where(SessionPlayer.session_id.in_(session_ids)))
+    session.execute(delete(LedgerEntry).where(LedgerEntry.merchant_id == merchant_id))
+    session.execute(delete(GameSession).where(GameSession.merchant_id == merchant_id))
+    session.execute(delete(Batch).where(Batch.merchant_id == merchant_id))
+    session.execute(delete(Player).where(Player.merchant_id == merchant_id))
+
+    write_audit(
+        session,
+        merchant_id=merchant_id,
+        user_id=actor.id,
+        action="purge_merchant_data",
+        target_type="merchant",
+        target_id=merchant_id,
+        detail=(
+            f"清空「{merchant.name}」经营数据："
+            f"玩家 {counts['players']}、班次 {counts['batches']}、局 {counts['sessions']}、"
+            f"流水 {counts['ledger']}、分红结算 {counts['settlements']}；"
+            f"备份 {backup}；备注 {note or '无'}"
+        ),
+        ip=ip,
+    )
+    return {"merchant_id": merchant_id, "merchant_name": merchant.name, "counts": counts, "backup": backup}

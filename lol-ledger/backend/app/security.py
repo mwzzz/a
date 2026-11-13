@@ -15,6 +15,10 @@ from app.errors import AppError, AuthError
 ALGORITHM = "HS256"
 MAX_PASSWORD_BYTES = 72
 
+# 令牌类型标记。记账系统账号与查战绩账号各自独立，靠这个字段互斥。
+TOKEN_TYPE_MERCHANT = "merchant"
+TOKEN_TYPE_ZJ = "zj"
+
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
@@ -53,6 +57,23 @@ def create_access_token(user_id: int, role: str, password_hash: str) -> tuple[st
     payload = {
         "sub": str(user_id),
         "role": role,
+        "typ": TOKEN_TYPE_MERCHANT,
+        "pv": password_fingerprint(password_hash),
+        "iat": issued,
+        "exp": issued + ttl_seconds,
+        "jti": uuid4().hex,
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM), ttl_seconds
+
+
+def create_zj_token(zj_user_id: int, password_hash: str) -> tuple[str, int]:
+    """查战绩账号的令牌，带 typ=zj，记账接口一律拒收。"""
+    ttl_seconds = int(settings.token_ttl_hours) * 3600
+    issued = int(datetime.now(timezone.utc).timestamp())
+    payload = {
+        "sub": str(zj_user_id),
+        "role": "zj",
+        "typ": TOKEN_TYPE_ZJ,
         "pv": password_fingerprint(password_hash),
         "iat": issued,
         "exp": issued + ttl_seconds,

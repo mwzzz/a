@@ -34,6 +34,8 @@ def update_settings(
         deposit_low_cents=payload.deposit_low_cents,
         deposit_high_cents=payload.deposit_high_cents,
         dividend_rate_percent=payload.dividend_rate_percent,
+        dividend_mode=payload.dividend_mode,
+        dividend_fixed_cents=payload.dividend_fixed_cents,
         shop_name=payload.shop_name,
         ip=client_ip(request),
     )

@@ -58,3 +58,42 @@ export function todayText(): string {
   const date = new Date()
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
+
+/** 区间端点：纯日期显示 MM-DD，带时间显示 MM-DD HH:mm */
+export function formatMoment(value?: string | null): string {
+  if (!value) return '-'
+  const text = value.trim()
+  if (text.length === 10) {
+    const [, month, day] = text.split('-')
+    return `${month}-${day}`
+  }
+  return formatShort(text)
+}
+
+/** 今天的起止（精确到分钟），用作区间筛选的默认值 */
+export function todayMomentRange(): [string, string] {
+  const day = todayText()
+  return [`${day}T00:00`, `${day}T23:59`]
+}
+
+/** 日期时间区间选择器的快捷项 */
+export function momentShortcuts() {
+  const dayStart = (offset: number) => {
+    const date = new Date()
+    date.setDate(date.getDate() - offset)
+    date.setHours(0, 0, 0, 0)
+    return date
+  }
+  const dayEnd = (offset: number) => {
+    const date = new Date()
+    date.setDate(date.getDate() - offset)
+    date.setHours(23, 59, 0, 0)
+    return date
+  }
+  return [
+    { text: '今天', value: () => [dayStart(0), dayEnd(0)] },
+    { text: '昨天', value: () => [dayStart(1), dayEnd(1)] },
+    { text: '最近三天', value: () => [dayStart(2), dayEnd(0)] },
+    { text: '最近一周', value: () => [dayStart(6), dayEnd(0)] },
+  ]
+}

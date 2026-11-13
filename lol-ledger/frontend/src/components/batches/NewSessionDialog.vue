@@ -89,13 +89,12 @@ import { formatCents, parseYuan } from '@/utils/money'
 
 const props = defineProps<{
   modelValue: boolean
-  batchId: number | null
   defaultTeaCents: number
 }>()
 
 const emit = defineEmits<{
   (event: 'update:modelValue', value: boolean): void
-  (event: 'created', value: { batchId: number }): void
+  (event: 'created', value: Record<string, never>): void
 }>()
 
 const name = ref('')
@@ -209,10 +208,6 @@ function close() {
 }
 
 async function submit() {
-  if (!props.batchId) {
-    ElMessage.warning('当前没有进行中的批次，请先开班')
-    return
-  }
   if (!filledCount.value) {
     ElMessage.warning('请至少选择 1 个玩家')
     return
@@ -236,7 +231,6 @@ async function submit() {
   saving.value = true
   try {
     await sessionApi.create({
-      batch_id: props.batchId,
       name: name.value.trim(),
       played_at: toIso(playedAt.value) || null,
       note: note.value.trim(),
@@ -244,7 +238,7 @@ async function submit() {
       player_ids: filledIds.value,
     })
     ElMessage.success('场次已创建')
-    emit('created', { batchId: props.batchId })
+    emit('created', {})
     close()
   } finally {
     saving.value = false
@@ -304,8 +298,8 @@ async function submit() {
   gap: 8px;
   padding: 4px 8px 4px 4px;
   border-radius: 8px;
-  background: #101319;
-  border: 1px solid #1e222b;
+  background: var(--app-bg-subtle);
+  border: 1px solid var(--app-border);
 }
 
 .slot.empty {
@@ -333,8 +327,8 @@ async function submit() {
   flex-wrap: wrap;
   gap: 18px;
   padding: 10px 12px;
-  background: #101319;
-  border: 1px solid #1e222b;
+  background: var(--app-bg-subtle);
+  border: 1px solid var(--app-border);
   border-radius: 8px;
   font-size: 12.5px;
   color: var(--el-text-color-secondary);

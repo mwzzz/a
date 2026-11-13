@@ -8,10 +8,11 @@ from tests.test_players import add_money, new_player
 def test_unauthenticated_calls_are_401(client) -> None:
     checks = [
         ("get", "/api/v1/players"),
-        ("get", "/api/v1/batches"),
+        ("get", "/api/v1/summary/operators"),
+        ("get", "/api/v1/queue"),
         ("get", "/api/v1/records/deposits"),
         ("get", "/api/v1/overview"),
-        ("post", "/api/v1/batches"),
+        ("post", "/api/v1/sessions"),
         ("post", "/api/v1/transfers"),
     ]
     for method, path in checks:

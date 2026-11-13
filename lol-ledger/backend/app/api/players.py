@@ -31,7 +31,7 @@ def _parse_ids(raw: str) -> list[int]:
 def list_players(
     keyword: str = "",
     level: str | None = None,
-    sort: str = "games_played_desc",
+    sort: str = "deposit_asc",
     page: int = 1,
     page_size: int = 20,
     actor: Actor = Depends(get_current_user),

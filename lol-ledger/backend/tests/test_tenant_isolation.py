@@ -7,15 +7,8 @@ from sqlalchemy import text
 from app import db as dbmod
 from app.models import Merchant
 from app.timeutil import now_text
-from tests.conftest import close_batch
 from tests.test_players import add_money, new_player
-from tests.test_sessions import create_session, open_batch
-
-
-def _open_batch_id(client, headers, label: str = "") -> int:
-    response = client.post("/api/v1/batches", json={"label": label}, headers=headers)
-    assert response.status_code == 201, response.text
-    return response.json()["id"]
+from tests.test_sessions import create_session
 
 
 def test_player_isolated_between_merchants(client, admin_headers, admin_b_headers) -> None:
@@ -112,44 +105,15 @@ def test_transfer_must_stay_inside_one_merchant(
     assert target_detail["deposit_cents"] == 1000
 
 
-def test_batches_and_sessions_isolated(
-    client, admin_headers, admin_b_headers
-) -> None:
-    batch_id = _open_batch_id(client, admin_headers, "甲店早班")
+def test_sessions_isolated(client, admin_headers, admin_b_headers) -> None:
     player = new_player(client, admin_headers, "甲店玩家")
-    session = create_session(client, admin_headers, batch_id, [player["id"]], tea=100)
+    session = create_session(client, admin_headers, 0, [player["id"]], tea=100)
 
-    assert client.get("/api/v1/batches", headers=admin_b_headers).json()["total"] == 0
-    assert client.get("/api/v1/batches/current", headers=admin_b_headers).json()["batch"] is None
-    for path in (
-        f"/api/v1/batches/{batch_id}",
-        f"/api/v1/batches/{batch_id}/summary",
-        f"/api/v1/batches/{batch_id}/ledger",
-        f"/api/v1/batches/{batch_id}/export.csv",
-        f"/api/v1/sessions/{session['id']}",
-    ):
-        assert client.get(path, headers=admin_b_headers).status_code == 404, path
-
-    me_b = client.get("/api/v1/auth/me", headers=admin_b_headers).json()
-    assert (
-        client.post(
-            f"/api/v1/batches/{batch_id}/close",
-            json={
-                "tea_to_user_id": me_b["id"],
-                "deposit_to_user_id": me_b["id"],
-            },
-            headers=admin_b_headers,
-        ).status_code
-        == 404
-    )
+    assert client.get(f"/api/v1/sessions/{session['id']}", headers=admin_b_headers).status_code == 404
 
     cross = client.post(
         "/api/v1/sessions",
-        json={
-            "batch_id": batch_id,
-            "tea_fee_cents": 100,
-            "player_ids": [player["id"]],
-        },
+        json={"tea_fee_cents": 100, "player_ids": [player["id"]]},
         headers=admin_b_headers,
     )
     assert cross.status_code == 404, cross.text
@@ -161,30 +125,16 @@ def test_batches_and_sessions_isolated(
     )
     assert preview.status_code == 404, preview.text
 
-    detail = client.get(f"/api/v1/batches/{batch_id}", headers=admin_headers).json()
-    assert detail["status"] == "open"
-    assert detail["summary"]["session_count"] == 1
-
-
-def test_two_merchants_can_open_batch_at_same_time(
-    client, admin_headers, admin_b_headers
-) -> None:
-    first = _open_batch_id(client, admin_headers)
-    second = _open_batch_id(client, admin_b_headers)
-    assert first != second
-
-    again = client.post("/api/v1/batches", json={}, headers=admin_headers)
-    assert again.status_code == 400
-    assert "还没交班" in again.json()["detail"]
+    detail = client.get(f"/api/v1/sessions/{session['id']}", headers=admin_headers).json()
+    assert detail["player_count"] == 1
 
 
 def test_records_and_overview_isolated(
     client, admin_headers, admin_b_headers
 ) -> None:
-    batch_id = _open_batch_id(client, admin_headers)
     player = new_player(client, admin_headers, "甲店流水")
     add_money(client, admin_headers, player["id"], 1000)
-    create_session(client, admin_headers, batch_id, [player["id"]], tea=200)
+    create_session(client, admin_headers, 0, [player["id"]], tea=200)
 
     other = new_player(client, admin_b_headers, "乙店流水")
     add_money(client, admin_b_headers, other["id"], 5000)
@@ -196,9 +146,8 @@ def test_records_and_overview_isolated(
     overview = client.get("/api/v1/overview", headers=admin_b_headers).json()
     assert overview["player_count"] == 1
     assert overview["total_deposit_cents"] == 5000
-    assert overview["open_batch"] is None
-    assert overview["custody"]["tea_cents"] == 0
-    assert overview["custody"]["amount_cents"] == 5000
+    assert overview["today"]["add_deposit_cents"] == 5000
+    assert overview["today"]["session_count"] == 0
     assert overview["recent_records"][0]["player"]["game_id"] == "乙店流水"
 
     sessions = client.get("/api/v1/records/sessions", headers=admin_b_headers).json()
@@ -229,25 +178,6 @@ def test_transfer_group_isolated(client, admin_headers, admin_b_headers) -> None
         f"/api/v1/records/transfers/{body['group_id']}", headers=admin_headers
     ).json()
     assert len(detail["entries"]) == 2
-
-
-def test_csv_export_only_contains_own_rows(
-    client, admin_headers, admin_b_headers
-) -> None:
-    batch_a = _open_batch_id(client, admin_headers)
-    player_a = new_player(client, admin_headers, "甲店导出")
-    add_money(client, admin_headers, player_a["id"], 1000)
-    create_session(client, admin_headers, batch_a, [player_a["id"]], tea=200)
-
-    batch_b = _open_batch_id(client, admin_b_headers)
-    player_b = new_player(client, admin_b_headers, "乙店导出")
-    add_money(client, admin_b_headers, player_b["id"], 1000)
-
-    content = client.get(
-        f"/api/v1/batches/{batch_b}/export.csv", headers=admin_b_headers
-    ).text
-    assert "乙店导出" in content
-    assert "甲店导出" not in content
 
 
 def test_accounts_isolated(client, admin_headers, admin_b_headers, staff) -> None:
@@ -324,9 +254,6 @@ def test_reconcile_and_close_scoped(client, admin_headers, admin_b_headers) -> N
     assert report_a["ok"] is False
     assert len(report_a["problems"]) == 1
     assert report_a["problems"][0]["game_id"] == "甲店坏账"
-
-    batch_b = _open_batch_id(client, admin_b_headers)
-    assert close_batch(client, batch_b, admin_b_headers).status_code == 200
 
 
 def test_settings_isolated(client, admin_headers, admin_b_headers) -> None:

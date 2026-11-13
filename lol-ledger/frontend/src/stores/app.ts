@@ -1,22 +1,15 @@
 import { defineStore } from 'pinia'
 
-const COLLAPSED_KEY = 'lol_collapsed_batches'
-const THEME_KEY = 'lol_theme'
+import { overviewApi } from '@/api'
+import type { SummaryTotals } from '@/api/types'
 
-function readCollapsed(): number[] {
-  try {
-    const raw = localStorage.getItem(COLLAPSED_KEY)
-    return raw ? (JSON.parse(raw) as number[]) : []
-  } catch {
-    return []
-  }
-}
+const THEME_KEY = 'lol_theme'
 
 export const useAppStore = defineStore('app', {
   state: () => ({
     theme: localStorage.getItem(THEME_KEY) || 'dark',
-    collapsed: readCollapsed(),
-    currentBatchId: null as number | null,
+    today: null as SummaryTotals | null,
+    todayLoaded: false,
   }),
   actions: {
     applyTheme() {
@@ -27,16 +20,15 @@ export const useAppStore = defineStore('app', {
       localStorage.setItem(THEME_KEY, this.theme)
       this.applyTheme()
     },
-    isCollapsed(id: number) {
-      return this.collapsed.includes(id)
-    },
-    toggleBatch(id: number) {
-      if (this.collapsed.includes(id)) {
-        this.collapsed = this.collapsed.filter((item) => item !== id)
-      } else {
-        this.collapsed = [...this.collapsed, id]
+    async refreshToday() {
+      try {
+        const payload = await overviewApi.get()
+        this.today = payload.today
+      } catch {
+        this.today = null
+      } finally {
+        this.todayLoaded = true
       }
-      localStorage.setItem(COLLAPSED_KEY, JSON.stringify(this.collapsed))
     },
   },
 })

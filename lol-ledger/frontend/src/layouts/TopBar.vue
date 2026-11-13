@@ -8,7 +8,7 @@
     <span v-if="auth.isSuperadmin" class="dev-tag">开发者</span>
     <span v-else-if="auth.merchantName" class="merchant-tag">{{ auth.merchantName }}</span>
 
-    <nav class="nav">
+    <nav class="nav desktop-only">
       <router-link
         v-for="item in navs"
         :key="item.name"
@@ -16,7 +16,8 @@
         class="nav-item"
         active-class="active"
       >
-        {{ item.label }}
+        <el-icon><component :is="item.icon" /></el-icon>
+        <span>{{ item.label }}</span>
       </router-link>
     </nav>
 
@@ -25,7 +26,7 @@
     <el-input
       v-if="!auth.isSuperadmin"
       v-model="keyword"
-      class="search"
+      class="search desktop-only"
       placeholder="搜索玩家或场次"
       clearable
       @keyup.enter="doSearch"
@@ -35,10 +36,20 @@
       </template>
     </el-input>
 
+    <el-button
+      v-if="!auth.isSuperadmin"
+      type="primary"
+      :icon="VideoPlay"
+      class="open-session"
+      @click="openSession"
+    >
+      开一局
+    </el-button>
+
     <el-dropdown trigger="click" @command="onUserCommand">
       <span class="user">
         <span class="dot"></span>
-        {{ auth.displayName || '未登录' }}
+        <span class="user-name">{{ auth.displayName || '未登录' }}</span>
         <el-icon class="caret"><ArrowDown /></el-icon>
       </span>
       <template #dropdown>
@@ -57,16 +68,6 @@
         </el-icon>
       </el-button>
     </el-tooltip>
-
-    <el-dropdown v-if="!auth.isSuperadmin" trigger="click" @command="onCreate">
-      <el-button type="primary" :icon="Plus">新增</el-button>
-      <template #dropdown>
-        <el-dropdown-menu>
-          <el-dropdown-item command="session">新增场次</el-dropdown-item>
-          <el-dropdown-item command="player">新增玩家</el-dropdown-item>
-        </el-dropdown-menu>
-      </template>
-    </el-dropdown>
   </header>
 
   <el-dialog v-model="pwdVisible" title="修改密码" width="420px" :close-on-click-modal="false">
@@ -90,29 +91,42 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowDown, Moon, Plus, Search, Sunny } from '@element-plus/icons-vue'
+import {
+  ArrowDown,
+  Calendar,
+  DataBoard,
+  MagicStick,
+  Moon,
+  Search,
+  Setting,
+  Sunny,
+  TrendCharts,
+  User,
+  VideoPlay,
+} from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { computed, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import { authApi } from '@/api'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 const app = useAppStore()
 
 const navs = computed(() =>
   auth.isSuperadmin
-    ? [{ name: 'platform', label: '商家与账号' }]
+    ? [{ name: 'platform', label: '商家与账号', icon: Setting }]
     : [
-        { name: 'overview', label: '总览' },
-        { name: 'batches', label: '场次' },
-        { name: 'players', label: '玩家' },
-        { name: 'records', label: '记录' },
-        { name: 'ledger', label: '账本' },
-        { name: 'settings', label: '设置' },
+        { name: 'overview', label: '工作台', icon: DataBoard },
+        { name: 'summary', label: '汇总', icon: Calendar },
+        { name: 'players', label: '玩家', icon: User },
+        { name: 'reports', label: '报表', icon: TrendCharts },
+        { name: 'settings', label: '设置', icon: Setting },
+        { name: 'tools', label: '小工具', icon: MagicStick },
       ],
 )
 
@@ -122,15 +136,21 @@ const saving = ref(false)
 const pwd = reactive({ old: '', next: '', confirm: '' })
 
 function doSearch() {
-  router.push({ name: 'records', query: keyword.value ? { keyword: keyword.value } : {} })
+  router.push({ name: 'reports', query: keyword.value ? { tab: 'records', keyword: keyword.value } : { tab: 'records' } })
 }
 
-function onCreate(command: string) {
-  if (command === 'session') {
-    router.push({ name: 'batches', query: { new: '1' } })
-  } else {
-    router.push({ name: 'players', query: { new: '1' } })
-  }
+function openSession() {
+  router.push({ name: 'summary', query: { new: '1' } })
+}
+
+function onShortcut(event: KeyboardEvent) {
+  if (event.key.toLowerCase() !== 'n' || event.metaKey || event.ctrlKey || event.altKey) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
+  if (document.querySelector('.el-overlay')) return
+  if (auth.isSuperadmin) return
+  event.preventDefault()
+  openSession()
 }
 
 async function onUserCommand(command: string) {
@@ -167,6 +187,20 @@ async function submitPassword() {
     saving.value = false
   }
 }
+
+onMounted(() => {
+  window.addEventListener('keydown', onShortcut)
+  if (!auth.isSuperadmin) void app.refreshToday()
+})
+
+onUnmounted(() => window.removeEventListener('keydown', onShortcut))
+
+watch(
+  () => route.fullPath,
+  () => {
+    if (!auth.isSuperadmin) void app.refreshToday()
+  },
+)
 </script>
 
 <style scoped>
@@ -174,10 +208,10 @@ async function submitPassword() {
   height: 56px;
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   padding: 0 22px;
-  background: #101319;
-  border-bottom: 1px solid #1e222b;
+  background: var(--app-bg-panel);
+  border-bottom: 1px solid var(--app-border);
   position: sticky;
   top: 0;
   z-index: 20;
@@ -189,6 +223,7 @@ async function submitPassword() {
   gap: 9px;
   cursor: pointer;
   user-select: none;
+  flex: none;
 }
 
 .brand-mark {
@@ -196,7 +231,7 @@ async function submitPassword() {
   height: 26px;
   border-radius: 7px;
   background: var(--el-color-primary);
-  color: #f5f8ff;
+  color: #ffffff;
   font-weight: 700;
   display: grid;
   place-items: center;
@@ -206,78 +241,85 @@ async function submitPassword() {
 .brand-name {
   font-size: 15px;
   font-weight: 600;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.3px;
 }
 
-.merchant-tag {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  padding: 0 9px;
-  border-radius: 999px;
-  background: rgba(64, 158, 255, 0.12);
-  border: 1px solid rgba(64, 158, 255, 0.35);
-  color: #7ec1ff;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
+.merchant-tag,
 .dev-tag {
   display: inline-flex;
   align-items: center;
   height: 22px;
   padding: 0 9px;
   border-radius: 999px;
-  background: rgba(230, 162, 60, 0.12);
-  border: 1px solid rgba(230, 162, 60, 0.4);
-  color: #e6a23c;
   font-size: 12px;
   white-space: nowrap;
+  flex: none;
+}
+
+.merchant-tag {
+  background: rgba(64, 158, 255, 0.1);
+  border: 1px solid rgba(64, 158, 255, 0.3);
+  color: var(--el-color-primary);
+}
+
+.dev-tag {
+  background: var(--app-warning-soft);
+  border: 1px solid rgba(230, 162, 60, 0.35);
+  color: var(--el-color-warning);
 }
 
 .nav {
   display: flex;
   align-items: center;
   gap: 2px;
-  margin-left: 8px;
+  margin-left: 6px;
 }
 
 .nav-item {
-  padding: 6px 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px;
   border-radius: 7px;
-  color: var(--el-text-color-secondary);
-  font-size: 13.5px;
-  transition: all 0.15s ease;
+  color: var(--app-text-muted);
+  font-size: 13px;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
 .nav-item:hover {
   color: var(--el-text-color-primary);
-  background: #181c24;
+  background: var(--app-bg-hover);
 }
 
 .nav-item.active {
-  color: #ffffff;
-  background: #1d2330;
+  color: var(--el-text-color-primary);
+  background: var(--app-bg-subtle);
+  font-weight: 600;
 }
 
 .search {
-  width: 230px;
+  width: 210px;
+}
+
+.open-session {
+  flex: none;
 }
 
 .user {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 5px 10px;
+  gap: 6px;
+  padding: 5px 8px;
   border-radius: 7px;
   color: var(--el-text-color-regular);
   cursor: pointer;
   font-size: 13px;
   outline: none;
+  flex: none;
 }
 
 .user:hover {
-  background: #181c24;
+  background: var(--app-bg-hover);
 }
 
 .dot {
@@ -285,21 +327,46 @@ async function submitPassword() {
   height: 7px;
   border-radius: 50%;
   background: var(--el-color-success);
-  box-shadow: 0 0 0 3px rgba(62, 207, 142, 0.12);
-}
-
-.caret {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
-.icon-btn {
-  color: var(--el-text-color-secondary);
+  box-shadow: 0 0 0 3px var(--app-success-soft);
 }
 
 .pwd-hint {
   margin-left: 86px;
   font-size: 12px;
-  color: var(--el-text-color-secondary);
+  color: var(--app-text-muted);
+  line-height: 1.6;
+}
+
+@media (max-width: 768px) {
+  .topbar {
+    height: 52px;
+    padding: 0 12px;
+    gap: 8px;
+  }
+
+  .brand-name {
+    font-size: 14px;
+  }
+
+  .merchant-tag {
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: inline-block;
+    line-height: 22px;
+  }
+
+  .user-name,
+  .open-session .el-icon + span {
+    display: none;
+  }
+
+  .open-session {
+    padding: 8px;
+  }
+
+  .icon-btn {
+    display: none;
+  }
 }
 </style>

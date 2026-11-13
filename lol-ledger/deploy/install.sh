@@ -48,6 +48,10 @@ JWT_SECRET=$SECRET
 DB_PATH=$APP_DIR/data/ledger.db
 TOKEN_TTL_HOURS=12
 DEBUG=false
+# 查战绩（多用户版）：填了才启用，详见 deploy/部署说明.md
+#LZYUMI_USER=
+#LZYUMI_PWD=
+#LZYUMI_TOKEN=
 EOF
   echo "已生成 $APP_DIR/.env（JWT_SECRET 随机）"
 else

@@ -1,0 +1,47 @@
+/* 全站设计令牌：亮色/暗色共用，组件里不要再写死背景和边框色。 */
+:root {
+  --app-bg-page: #f4f6fa;
+  --app-bg-panel: #ffffff;
+  --app-bg-elevated: #ffffff;
+  --app-bg-subtle: #f1f4f9;
+  --app-bg-hover: #f6f8fc;
+  --app-border: #e3e8f0;
+  --app-border-strong: #d3dae6;
+  --app-text-muted: #697386;
+  --app-text-faint: #98a2b3;
+  --app-danger-soft: rgba(245, 108, 108, 0.08);
+  --app-warning-soft: rgba(230, 162, 60, 0.1);
+  --app-success-soft: rgba(62, 207, 142, 0.1);
+  --app-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+
+  --app-space-1: 4px;
+  --app-space-2: 8px;
+  --app-space-3: 12px;
+  --app-space-4: 16px;
+  --app-space-6: 24px;
+
+  --app-radius-sm: 8px;
+  --app-radius-md: 10px;
+  --app-radius-lg: 12px;
+
+  --app-font-xs: 12px;
+  --app-font-sm: 13px;
+  --app-font-md: 15px;
+  --app-font-lg: 20px;
+}
+
+html.dark {
+  --app-bg-page: #0b0d12;
+  --app-bg-panel: #14161c;
+  --app-bg-elevated: #1b1e27;
+  --app-bg-subtle: #101319;
+  --app-bg-hover: #1a1f2a;
+  --app-border: #20242d;
+  --app-border-strong: #262b36;
+  --app-text-muted: #7f8798;
+  --app-text-faint: #5f6675;
+  --app-danger-soft: rgba(255, 92, 92, 0.08);
+  --app-warning-soft: rgba(240, 180, 41, 0.08);
+  --app-success-soft: rgba(62, 207, 142, 0.08);
+  --app-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}

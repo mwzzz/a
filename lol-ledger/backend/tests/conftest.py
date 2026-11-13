@@ -17,8 +17,8 @@ from sqlalchemy import select  # noqa: E402
 
 from app import db as dbmod  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Merchant, User  # noqa: E402
-from app.security import create_access_token, hash_password  # noqa: E402
+from app.models import Merchant, User, ZjUser  # noqa: E402
+from app.security import create_access_token, create_zj_token, hash_password  # noqa: E402
 from app.services import options  # noqa: E402
 from app.timeutil import now_text  # noqa: E402
 
@@ -117,28 +117,11 @@ def current_user_id(client, headers) -> int:
     return int(client.get("/api/v1/auth/me", headers=headers).json()["id"])
 
 
-def close_batch(
-    client,
-    batch_id: int,
-    headers,
-    *,
-    tea_to_id: int | None = None,
-    deposit_to_id: int | None = None,
-    tea_method: str = "wechat",
-    deposit_method: str = "wechat",
-    note: str = "",
-):
-    """默认茶水与押金都交给当前操作人，方便老测试继续跑。"""
-    uid = current_user_id(client, headers)
+def settle_dividends(client, headers, user_ids: list[int], note: str = ""):
+    """按当天区间结算分红（班次已取消，结算不再依赖班次）。"""
     return client.post(
-        f"/api/v1/batches/{batch_id}/close",
-        json={
-            "tea_to_user_id": tea_to_id or uid,
-            "deposit_to_user_id": deposit_to_id or uid,
-            "tea_method": tea_method,
-            "deposit_method": deposit_method,
-            "note": note,
-        },
+        "/api/v1/reports/dividends/settle",
+        json={"user_ids": user_ids, "note": note},
         headers=headers,
     )
 
@@ -184,6 +167,54 @@ def create_superadmin_direct(
         "token": token,
         "headers": {"Authorization": f"Bearer {token}"},
     }
+
+
+def create_zj_user_direct(
+    username: str = "zju01",
+    password: str = DEFAULT_PASSWORD,
+    quota_total: int = 10,
+    is_active: bool = True,
+    display_name: str = "",
+) -> dict:
+    """直接建一个查战绩账号并签 zj 令牌，不经过登录接口。"""
+    with dbmod.write_session() as session:
+        stamp = now_text()
+        password_hash = hash_password(password)
+        user = ZjUser(
+            username=username,
+            password_hash=password_hash,
+            display_name=display_name or username,
+            note="",
+            quota_total=quota_total,
+            quota_used=0,
+            is_active=is_active,
+            password_changed_at=stamp,
+            last_login_at=None,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+        session.add(user)
+        session.flush()
+        user_id = user.id
+    token, _ = create_zj_token(user_id, password_hash)
+    return {
+        "id": user_id,
+        "username": username,
+        "password": password,
+        "quota_total": quota_total,
+        "token": token,
+        "headers": {"Authorization": f"Bearer {token}"},
+    }
+
+
+@pytest.fixture()
+def zj_user(database) -> dict:
+    return create_zj_user_direct()
+
+
+@pytest.fixture()
+def zj_headers(zj_user) -> dict:
+    return zj_user["headers"]
 
 
 @pytest.fixture()

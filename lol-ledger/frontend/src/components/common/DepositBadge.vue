@@ -19,14 +19,14 @@ defineProps<{
 }
 
 .badge.low {
-  color: #ff5c5c;
+  color: var(--el-color-danger);
 }
 
 .badge.warn {
-  color: #f0b429;
+  color: var(--el-color-warning);
 }
 
 .badge.safe {
-  color: #3ecf8e;
+  color: var(--el-color-success);
 }
 </style>

@@ -5,19 +5,24 @@ from __future__ import annotations
 from sqlalchemy import text
 
 from app import db as dbmod
-from tests.conftest import close_batch
 from tests.test_players import add_money, new_player
 
 
 def open_batch(client, headers) -> int:
-    response = client.post("/api/v1/batches", json={"label": ""}, headers=headers)
-    assert response.status_code == 201, response.text
-    return response.json()["id"]
+    """班次已取消；保留这个函数只是为了让老用例保持调用顺序，返回值不再有意义。"""
+    return 0
 
 
-def create_session(client, headers, batch_id: int, player_ids: list[int], tea: int = 200, **extra) -> dict:
+def create_session(
+    client,
+    headers,
+    batch_id: int,
+    player_ids: list[int],
+    tea: int = 200,
+    **extra,
+) -> dict:
+    """batch_id 参数已废弃，仅为兼容旧用例保留位置。"""
     payload = {
-        "batch_id": batch_id,
         "name": extra.pop("name", ""),
         "played_at": extra.pop("played_at", None),
         "note": extra.pop("note", ""),
@@ -76,30 +81,6 @@ def test_zero_tea_writes_zero_entry(client, admin_headers) -> None:
     detail = client.get(f"/api/v1/players/{pid}", headers=admin_headers).json()
     assert detail["deposit_cents"] == 500
     assert detail["games_played"] == 1
-
-
-def test_open_session_requires_open_batch(client, admin_headers) -> None:
-    pid = new_player(client, admin_headers, "无班可上")["id"]
-    response = client.post(
-        "/api/v1/sessions",
-        json={"tea_fee_cents": 200, "player_ids": [pid]},
-        headers=admin_headers,
-    )
-    assert response.status_code == 400
-    assert "开班" in response.json()["detail"]
-
-
-def test_closed_batch_rejects_session(client, admin_headers) -> None:
-    batch_id = open_batch(client, admin_headers)
-    pid = new_player(client, admin_headers, "关班后")["id"]
-    close_batch(client, batch_id, admin_headers)
-    response = client.post(
-        "/api/v1/sessions",
-        json={"batch_id": batch_id, "tea_fee_cents": 200, "player_ids": [pid]},
-        headers=admin_headers,
-    )
-    assert response.status_code == 400
-    assert "交班" in response.json()["detail"]
 
 
 def test_session_player_limits(client, admin_headers) -> None:

@@ -70,6 +70,8 @@ Authorization: Bearer <access_token>
 | GET | `/platform/merchants` | 所有商家（不含平台商家），带 `user_count`、`player_count` |
 | POST | `/platform/merchants` | `{name, note?, admin_username?, admin_password?, admin_display_name?}`，可同时建第一个管理员 |
 | PATCH | `/platform/merchants/{id}` | 改 `name` / `note` / `status(active/disabled)`；停用后该店账号立即无法登录 |
+| GET | `/platform/merchants/{id}/purge-preview` | 清空前预览：各表将删除的行数、当前在库现金、保留项、风险提示。只读 |
+| POST | `/platform/merchants/{id}/purge` | `{confirm_name, note?}`，清空该店玩家/班次/场次/流水/交接/分红结算；`confirm_name` 必须与商家名完全一致，删除前自动整库备份，写审计 |
 | GET | `/platform/merchants/{id}/users` | 指定商家的账号（不含开发者账号） |
 | POST | `/platform/merchants/{id}/users` | `{username, password, display_name?, role}`，商家停用时拒绝 |
 | PATCH | `/platform/users/{id}` | 改显示名 / 角色 / 启停；最后一个启用的管理员不能降级或停用 |
@@ -173,9 +175,45 @@ opening_total_cents`。
 | GET | `/records/transfers/{group_id}` | 一笔划转的两条流水 |
 | GET | `/overview` | 玩家押金余额、在用玩家、低押金人数、**本班统计**、在库现金/保管人、最近 10 条 |
 | GET | `/reconcile` | 对账，仅管理员 |
-| GET | `/settings` | 读设置，含 `dividend_rate_percent` |
-| PATCH | `/settings` | 改设置，仅管理员；分红比例 0~100 |
+| GET | `/settings` | 读设置，含 `dividend_rate_percent`、`dividend_mode`、`dividend_fixed_cents` |
+| PATCH | `/settings` | 改设置，仅管理员；`dividend_rate_percent` 0~100；`dividend_mode` 为 `percent`/`fixed`；`dividend_fixed_cents` 0~1000000，`fixed` 模式下必须大于 0 |
 | POST | `/ai/recognize-players` | 本期固定 501（AI 识别占位） |
+
+## 小工具 · 排队登记（店员和管理员都可用）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/queue` | `day=YYYY-MM-DD`（默认今天）；返回 `entries`（按登记先后）、`counts`（waiting/playing/done/cancelled）、`shop_name` |
+| GET | `/queue/snapshot` | 生成阵容图用的同一份数据，字段与 `/queue` 一致 |
+| POST | `/queue` | `{game_id, note?}`；同一天同一名字在排队中/进行中时不能重复登记（400） |
+| PATCH | `/queue/{id}` | `{status}`；只允许 `waiting→playing/cancelled`、`playing→done/cancelled`，其余 400 |
+
+状态：`waiting` 排队中、`playing` 上机中、`done` 已完成、`cancelled` 已取消。日期按 `created_at` 的自然日（东八区）过滤。
+
+## 小工具 · 常用名单（店员和管理员都可用）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/tools/name-lists` | 全部分类及其条目（按 `sort_order` 排好） |
+| POST | `/tools/name-lists` | `{name}` 新建分类，同店重名返回 400 |
+| PATCH | `/tools/name-lists/{id}` | `{name}` 改名 |
+| DELETE | `/tools/name-lists/{id}` | 删分类，连同条目一起删 |
+| POST | `/tools/name-lists/{id}/move` | `{direction: up\|down}` 调整分类顺序 |
+| POST | `/tools/name-lists/{id}/items` | `{content, note?}` 新增条目 |
+| PATCH | `/tools/name-lists/{id}/items/{item_id}` | `{content?, note?}` 修改条目 |
+| DELETE | `/tools/name-lists/{id}/items/{item_id}` | 删除条目 |
+| POST | `/tools/name-lists/{id}/items/{item_id}/move` | `{direction}` 调整条目顺序 |
+
+新商家会自动预置「打手 / 免茶水 / 每天up / 免押金」四类及条目。
+
+## 时间参数（重要）
+
+`date_from` / `date_to` 同时接受两种写法，后端统一成带 `+08:00` 的闭区间：
+
+- `2026-11-06`：当天 00:00:00 至 23:59:59
+- `2026-11-06T09:30` 或 `2026-11-06 09:30`：精确到该分钟
+
+涉及接口：`/summary/operators`、`/records/*`、`/sessions`、`/reports/dividends/*`。
 
 ## 约定
 

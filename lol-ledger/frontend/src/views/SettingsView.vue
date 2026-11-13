@@ -30,13 +30,29 @@
                 <template #suffix>高于这个数显示绿色</template>
               </el-input>
             </el-form-item>
-            <el-form-item label="分红比例">
+            <el-form-item label="分红方式">
+              <el-radio-group v-model="form.dividend_mode" :disabled="!auth.isAdmin">
+                <el-radio-button value="percent">按茶水比例</el-radio-button>
+                <el-radio-button value="fixed">每局固定</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item v-if="form.dividend_mode === 'percent'" label="分红比例">
               <el-input
                 v-model="form.dividend_rate"
                 :disabled="!auth.isAdmin"
                 autocomplete="off"
               >
                 <template #suffix>% · 按操作人茶水计算</template>
+              </el-input>
+            </el-form-item>
+            <el-form-item v-else label="每局分红">
+              <el-input
+                v-model="form.dividend_fixed"
+                :disabled="!auth.isAdmin"
+                autocomplete="off"
+              >
+                <template #prefix>¥</template>
+                <template #suffix>每局 · 按操作人局数计算</template>
               </el-input>
             </el-form-item>
             <el-form-item>
@@ -47,7 +63,8 @@
             </el-form-item>
           </el-form>
           <div class="note">
-            押金颜色规则：低于不足线红色，介于两者之间黄色，高于充足线绿色。开局扣茶水时如果余额不够会扣成负数。
+            押金颜色规则：低于不足线红色，介于两者之间黄色，高于充足线绿色。开局扣茶水时如果余额不够会扣成负数。<br />
+            分红方式：按茶水比例时，操作人分红 = 本人茶水 × 比例；每局固定时，操作人分红 = 本人局数 × 每局金额，与茶水多少无关。改动只影响之后关班的班次，已关班次的金额不变。
           </div>
         </div>
       </el-tab-pane>
@@ -62,7 +79,7 @@
           </span>
         </div>
 
-        <div class="panel">
+        <div class="panel desktop-only">
           <el-table v-loading="accountLoading" :data="accounts">
             <el-table-column label="用户名" min-width="150">
               <template #default="{ row }">
@@ -109,6 +126,54 @@
               </template>
             </el-table-column>
           </el-table>
+        </div>
+
+        <div class="mobile-only">
+          <div v-loading="accountLoading" class="account-cards">
+            <div v-for="row in accounts" :key="row.id" class="account-card">
+              <div class="account-card-head">
+                <div>
+                  <div class="cell-main">{{ row.username }}</div>
+                  <div v-if="row.id === auth.user?.id" class="cell-sub">这是你</div>
+                </div>
+                <el-tag size="small" :type="row.role === 'admin' ? 'warning' : 'info'" effect="plain">
+                  {{ row.role === 'admin' ? '管理员' : '店员' }}
+                </el-tag>
+              </div>
+              <div class="account-card-row">
+                <span class="muted">显示名</span>
+                <div class="account-card-value">
+                  <el-input
+                    v-if="row.id === editingId"
+                    v-model="editingName"
+                    size="small"
+                    @keyup.enter="saveName(row)"
+                  />
+                  <span v-else>{{ row.display_name }}</span>
+                  <el-button v-if="row.id === editingId" size="small" type="primary" @click="saveName(row)">
+                    保存
+                  </el-button>
+                </div>
+              </div>
+              <div class="account-card-row">
+                <span class="muted">状态</span>
+                <el-switch
+                  :model-value="row.is_active"
+                  :disabled="row.id === auth.user?.id"
+                  @change="(value: boolean) => toggleActive(row, value)"
+                />
+              </div>
+              <div class="account-card-row">
+                <span class="muted">最后登录</span>
+                <span>{{ row.last_login_at ? formatShort(row.last_login_at) : '从未登录' }}</span>
+              </div>
+              <div class="account-card-ops">
+                <el-button size="small" @click="startEditName(row)">改显示名</el-button>
+                <el-button size="small" @click="openReset(row)">重置密码</el-button>
+              </div>
+            </div>
+            <div v-if="!accountLoading && !accounts.length" class="empty-hint">还没有账号</div>
+          </div>
         </div>
       </el-tab-pane>
 
@@ -196,7 +261,7 @@ import { ElMessage } from 'element-plus'
 import { onMounted, reactive, ref, watch } from 'vue'
 
 import { accountApi, overviewApi, settingsApi } from '@/api'
-import type { AccountRow, ReconcilePayload } from '@/api/types'
+import type { AccountRow, DividendMode, ReconcilePayload } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { formatShort } from '@/utils/datetime'
 import { formatCents, parseYuan } from '@/utils/money'
@@ -209,7 +274,9 @@ const form = reactive({
   last_tea: '',
   low: '',
   high: '',
+  dividend_mode: 'percent' as DividendMode,
   dividend_rate: '50',
+  dividend_fixed: '0.00',
 })
 const saving = ref(false)
 
@@ -236,7 +303,9 @@ async function loadSettings() {
   form.last_tea = formatCents(data.last_tea_cents)
   form.low = formatCents(data.deposit_low_cents)
   form.high = formatCents(data.deposit_high_cents)
+  form.dividend_mode = data.dividend_mode
   form.dividend_rate = String(data.dividend_rate_percent)
+  form.dividend_fixed = formatCents(data.dividend_fixed_cents)
 }
 
 async function saveSettings() {
@@ -256,6 +325,15 @@ async function saveSettings() {
     ElMessage.warning('分红比例要填 0~100 的整数')
     return
   }
+  const fixed = parseYuan(form.dividend_fixed)
+  if (fixed === null) {
+    ElMessage.warning('每局分红金额格式不正确，最多两位小数')
+    return
+  }
+  if (form.dividend_mode === 'fixed' && fixed <= 0) {
+    ElMessage.warning('按局分红时，每局金额要大于 0')
+    return
+  }
   saving.value = true
   try {
     await settingsApi.update({
@@ -264,6 +342,8 @@ async function saveSettings() {
       deposit_low_cents: low,
       deposit_high_cents: high,
       dividend_rate_percent: rate,
+      dividend_mode: form.dividend_mode,
+      dividend_fixed_cents: fixed,
     })
     ElMessage.success('设置已保存')
     await loadSettings()
@@ -382,8 +462,8 @@ onMounted(async () => {
 .note {
   margin-top: 6px;
   padding: 10px 12px;
-  background: #101319;
-  border: 1px solid #1c2028;
+  background: var(--app-bg-subtle);
+  border: 1px solid var(--app-border);
   border-radius: 8px;
   font-size: 11.5px;
   color: var(--el-text-color-secondary);
@@ -427,13 +507,13 @@ onMounted(async () => {
 .check-report.ok {
   background: rgba(62, 207, 142, 0.08);
   border: 1px solid rgba(62, 207, 142, 0.25);
-  color: #8fe3bb;
+  color: var(--el-color-success);
 }
 
 .check-report.bad {
   background: rgba(255, 92, 92, 0.08);
   border: 1px solid rgba(255, 92, 92, 0.3);
-  color: #ffb3b3;
+  color: var(--el-color-danger);
 }
 
 .check-line {
@@ -444,5 +524,85 @@ onMounted(async () => {
 
 .check-report.bad .el-table {
   margin-top: 10px;
+}
+
+.account-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.account-card {
+  padding: 12px 14px;
+  background: var(--app-bg-panel);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+}
+
+.account-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--app-border);
+}
+
+.account-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 12.5px;
+}
+
+.account-card-value {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.account-card-ops {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.account-card-ops :deep(.el-button) {
+  flex: 1;
+  margin-left: 0;
+}
+
+@media (max-width: 768px) {
+  .form-panel {
+    padding: 16px 14px 4px;
+  }
+
+  .form-panel :deep(.el-form-item) {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .form-panel :deep(.el-form-item__label) {
+    width: auto !important;
+    justify-content: flex-start;
+    padding: 0 0 4px;
+    line-height: 1.4;
+  }
+
+  .form-panel :deep(.el-form-item__content) {
+    margin-left: 0 !important;
+  }
+
+  .check-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
 }
 </style>

@@ -179,7 +179,9 @@ def test_upgrade_v1_keeps_data(tmp_path) -> None:
             assert conn.execute("SELECT is_superadmin FROM users").fetchone()[0] == 0
             assert conn.execute("SELECT deposit_cents FROM players").fetchone()[0] == 4700
             assert conn.execute("SELECT merchant_id FROM ledger").fetchone()[0] == 1
-            assert conn.execute("SELECT COUNT(*) FROM session_players").fetchone()[0] == 1
+            # v8 起不再有场次/班次，历史数据在迁移时清空
+            assert conn.execute("SELECT COUNT(*) FROM session_players").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
             assert conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0] == 1
             assert (
                 conn.execute(
@@ -212,11 +214,37 @@ def test_upgrade_v1_keeps_data(tmp_path) -> None:
         dbmod.dispose()
 
 
+LEGACY_SESSIONS_DDL = """
+CREATE TABLE IF NOT EXISTS sessions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    merchant_id   INTEGER NOT NULL REFERENCES merchants(id),
+    batch_id      INTEGER NOT NULL REFERENCES batches(id),
+    name          TEXT    NOT NULL DEFAULT '',
+    played_at     TEXT    NOT NULL,
+    tea_fee_cents INTEGER NOT NULL CHECK (tea_fee_cents >= 0),
+    note          TEXT    NOT NULL DEFAULT '',
+    operator_id   INTEGER NOT NULL REFERENCES users(id),
+    player_count  INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT    NOT NULL
+)
+"""
+
+
 def _ddl_for(version: int) -> tuple[list[str], list[str]]:
-    """用当前 DDL 拼出旧版本结构：<3 去掉超管列，<4 去掉保管人/分红列和交接表。"""
+    """用当前 DDL 拼出旧版本结构：<3 去超管，<4 去保管/分红，<5 去结算表，<6 去分红方式，<8 场次仍挂在班次上。"""
     statements = []
     for statement in migrations.TABLE_STATEMENTS:
-        if "cash_handovers" in statement:
+        if version < 8 and "CREATE TABLE IF NOT EXISTS sessions" in statement:
+            statement = LEGACY_SESSIONS_DDL
+        if version < 4 and "cash_handovers" in statement:
+            continue
+        if version < 5 and "dividend_settlement" in statement:
+            continue
+        if version < 10 and ("tool_lists" in statement or "tool_items" in statement):
+            continue
+        if version < 7 and "queue_entries" in statement:
+            continue
+        if version < 9 and "zj_" in statement:
             continue
         if version < 3:
             statement = re.sub(
@@ -235,11 +263,22 @@ def _ddl_for(version: int) -> tuple[list[str], list[str]]:
                 statement,
                 flags=re.MULTILINE,
             )
+        if version < 6:
+            statement = re.sub(
+                r"^\s*dividend_mode\s+TEXT[^\n]*\n\s*CHECK \(dividend_mode[^\n]*\n",
+                "",
+                statement,
+                flags=re.MULTILINE,
+            )
+            statement = re.sub(
+                r"^\s*dividend_fixed_cents[^\n]*\n", "", statement, flags=re.MULTILINE
+            )
         statements.append(statement)
     indexes = [
         item
         for item in migrations.INDEX_STATEMENTS
         if not (version < 3 and "ux_merchants_system" in item)
+        and not (version < 9 and "zj_" in item)
     ]
     return statements, indexes
 
@@ -316,15 +355,19 @@ def test_upgrade_v2_adds_v3_and_v4(tmp_path) -> None:
             assert conn.execute("SELECT COUNT(*) FROM merchants WHERE is_system = 0").fetchone()[0] == 1
             assert conn.execute("SELECT custodian_user_id FROM merchants WHERE id=1").fetchone()[0] == 1
             assert _table_exists(path, "cash_handovers")
+            assert _table_exists(path, "dividend_settlements")
+            assert _table_exists(path, "dividend_settlement_batches")
             assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         finally:
             conn.close()
         assert len(list((tmp_path / "backups").glob("pre-v3-*.db"))) == 1
         assert len(list((tmp_path / "backups").glob("pre-v4-*.db"))) == 1
+        assert len(list((tmp_path / "backups").glob("pre-v5-*.db"))) == 1
+        assert len(list((tmp_path / "backups").glob("pre-v6-*.db"))) == 1
 
         # 幂等：再跑一次不新增商家、不再备份
         dbmod.ensure_schema()
-        assert len(list((tmp_path / "backups").glob("pre-v4-*.db"))) == 1
+        assert len(list((tmp_path / "backups").glob("pre-v6-*.db"))) == 1
     finally:
         dbmod.dispose()
 
@@ -342,10 +385,8 @@ def test_upgrade_v3_converts_manual_deduct_and_adds_custody(tmp_path) -> None:
                 row[0] for row in conn.execute("SELECT DISTINCT reason FROM ledger").fetchall()
             }
             assert reasons == {"add_deposit", "refund"}
-            batch = conn.execute(
-                "SELECT refund_total_cents, deduct_total_cents FROM batches WHERE id=1"
-            ).fetchone()
-            assert batch == (100, 0)
+            # v8 起取消班次，历史班次在迁移时清空
+            assert conn.execute("SELECT COUNT(*) FROM batches").fetchone()[0] == 0
             assert conn.execute("SELECT custodian_user_id FROM merchants WHERE id=1").fetchone()[0] == 1
             rate = conn.execute(
                 "SELECT value FROM merchant_settings WHERE merchant_id=1 AND key='dividend_rate_percent'"
@@ -355,12 +396,76 @@ def test_upgrade_v3_converts_manual_deduct_and_adds_custody(tmp_path) -> None:
                 row[1] for row in conn.execute("PRAGMA table_info(batches)").fetchall()
             }
             assert "dividend_rate_percent" in batch_columns
+            assert "dividend_mode" in batch_columns
+            assert "dividend_fixed_cents" in batch_columns
             assert _table_exists(path, "cash_handovers")
+            assert _table_exists(path, "dividend_settlements")
             assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         finally:
             conn.close()
         assert len(list((tmp_path / "backups").glob("pre-v4-*.db"))) == 1
+        assert len(list((tmp_path / "backups").glob("pre-v5-*.db"))) == 1
+        assert len(list((tmp_path / "backups").glob("pre-v6-*.db"))) == 1
         assert list((tmp_path / "backups").glob("pre-v3-*.db")) == []
+    finally:
+        dbmod.dispose()
+
+
+def test_upgrade_v4_adds_dividend_tables(tmp_path) -> None:
+    path = tmp_path / "v4.db"
+    _build_old_db(path, 4)
+    dbmod.configure_db(path)
+    try:
+        dbmod.ensure_schema()
+        conn = sqlite3.connect(path)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+            assert _table_exists(path, "dividend_settlements")
+            assert _table_exists(path, "dividend_settlement_batches")
+            assert conn.execute("SELECT COUNT(*) FROM players").fetchone()[0] == 1
+            assert conn.execute("SELECT COUNT(*) FROM batches").fetchone()[0] == 0
+            assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        finally:
+            conn.close()
+        assert len(list((tmp_path / "backups").glob("pre-v5-*.db"))) == 1
+        assert len(list((tmp_path / "backups").glob("pre-v6-*.db"))) == 1
+        assert list((tmp_path / "backups").glob("pre-v4-*.db")) == []
+    finally:
+        dbmod.dispose()
+
+
+def test_upgrade_v5_adds_dividend_mode(tmp_path) -> None:
+    path = tmp_path / "v5.db"
+    _build_old_db(path, 5)
+    dbmod.configure_db(path)
+    try:
+        dbmod.ensure_schema()
+        conn = sqlite3.connect(path)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(batches)").fetchall()
+            }
+            assert "dividend_mode" in columns
+            assert "dividend_fixed_cents" in columns
+            # 老班次按比例分红，固定金额 0，行为不变
+            # 列还在（供历史数据/回滚用），但 v8 起班次数据已清空
+            assert conn.execute("SELECT COUNT(*) FROM batches").fetchone()[0] == 0
+            settings = dict(
+                conn.execute(
+                    "SELECT key, value FROM merchant_settings WHERE merchant_id=1"
+                ).fetchall()
+            )
+            assert settings["dividend_mode"] == "percent"
+            assert settings["dividend_fixed_cents"] == "0"
+            assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        finally:
+            conn.close()
+        assert len(list((tmp_path / "backups").glob("pre-v6-*.db"))) == 1
+        assert list((tmp_path / "backups").glob("pre-v5-*.db")) == []
+
+        dbmod.ensure_schema()
+        assert len(list((tmp_path / "backups").glob("pre-v6-*.db"))) == 1
     finally:
         dbmod.dispose()
 
@@ -378,7 +483,103 @@ def _table_exists(path: Path, name: str) -> bool:
         conn.close()
 
 
-def test_fresh_database_is_v4(tmp_path) -> None:
+def test_upgrade_v6_adds_queue_table(tmp_path) -> None:
+    path = tmp_path / "v6.db"
+    _build_old_db(path, 6)
+    dbmod.configure_db(path)
+    try:
+        dbmod.ensure_schema()
+        conn = sqlite3.connect(path)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(queue_entries)").fetchall()
+            }
+            assert {"game_id", "status", "operator_id", "created_at"} <= columns
+            assert conn.execute("SELECT COUNT(*) FROM queue_entries").fetchone()[0] == 0
+            assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        finally:
+            conn.close()
+        assert len(list((tmp_path / "backups").glob("pre-v7-*.db"))) == 1
+        assert list((tmp_path / "backups").glob("pre-v6-*.db")) == []
+
+        dbmod.ensure_schema()
+        assert len(list((tmp_path / "backups").glob("pre-v7-*.db"))) == 1
+    finally:
+        dbmod.dispose()
+
+
+def test_upgrade_v8_adds_zhanji_tables(tmp_path) -> None:
+    """v8 → v9 只新增查战绩五张表，既有账号/玩家数据原样保留。"""
+    path = tmp_path / "v8.db"
+    _build_old_db(path, 8)
+    dbmod.configure_db(path)
+    try:
+        dbmod.ensure_schema()
+        conn = sqlite3.connect(path)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+            for table in (
+                "zj_users",
+                "zj_batches",
+                "zj_batch_players",
+                "zj_queries",
+                "zj_grants",
+            ):
+                assert _table_exists(path, table)
+            assert conn.execute("SELECT COUNT(*) FROM zj_users").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
+            assert conn.execute("SELECT COUNT(*) FROM players").fetchone()[0] == 1
+            assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        finally:
+            conn.close()
+
+        assert len(list((tmp_path / "backups").glob("pre-v9-*.db"))) == 1
+
+        # 幂等：再跑一次不重复备份
+        dbmod.ensure_schema()
+        assert len(list((tmp_path / "backups").glob("pre-v9-*.db"))) == 1
+    finally:
+        dbmod.dispose()
+
+
+def test_upgrade_v9_adds_tool_lists(tmp_path) -> None:
+    path = tmp_path / "v9.db"
+    _build_old_db(path, 9)
+    dbmod.configure_db(path)
+    try:
+        dbmod.ensure_schema()
+        conn = sqlite3.connect(path)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+            assert _table_exists(path, "tool_lists")
+            assert _table_exists(path, "tool_items")
+            names = [
+                row[0]
+                for row in conn.execute(
+                    "select name from tool_lists order by sort_order"
+                ).fetchall()
+            ]
+            assert names == ["打手", "免茶水", "每天up", "免押金"]
+            assert conn.execute("SELECT COUNT(*) FROM tool_items").fetchone()[0] == 17
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM tool_items WHERE content = '江南'"
+                ).fetchone()[0]
+                == 1
+            )
+            assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        finally:
+            conn.close()
+        assert len(list((tmp_path / "backups").glob("pre-v10-*.db"))) == 1
+
+        dbmod.ensure_schema()
+        assert len(list((tmp_path / "backups").glob("pre-v10-*.db"))) == 1
+    finally:
+        dbmod.dispose()
+
+
+def test_fresh_database_is_v7(tmp_path) -> None:
     path = tmp_path / "fresh.db"
     dbmod.configure_db(path)
     try:
@@ -388,12 +589,23 @@ def test_fresh_database_is_v4(tmp_path) -> None:
             assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
             assert conn.execute("SELECT COUNT(*) FROM merchants WHERE is_system = 0").fetchone()[0] == 1
             assert conn.execute("SELECT COUNT(*) FROM merchants WHERE is_system = 1").fetchone()[0] == 1
-            assert conn.execute("SELECT COUNT(*) FROM merchant_settings").fetchone()[0] == 4
+            assert conn.execute("SELECT COUNT(*) FROM merchant_settings").fetchone()[0] == 6
             user_columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()
             }
             assert "is_superadmin" in user_columns
             assert _table_exists(path, "cash_handovers")
+            assert _table_exists(path, "dividend_settlements")
+            assert _table_exists(path, "dividend_settlement_batches")
+            assert _table_exists(path, "queue_entries")
+            assert _table_exists(path, "tool_lists")
+            assert conn.execute("SELECT COUNT(*) FROM tool_lists").fetchone()[0] == 4
+            assert conn.execute("SELECT COUNT(*) FROM tool_items").fetchone()[0] == 17
+            assert _table_exists(path, "zj_users")
+            assert _table_exists(path, "zj_batches")
+            assert _table_exists(path, "zj_batch_players")
+            assert _table_exists(path, "zj_queries")
+            assert _table_exists(path, "zj_grants")
             assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         finally:
             conn.close()

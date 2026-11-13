@@ -1,4 +1,4 @@
-"""并发：不丢更新、只有一个关班成功、并发后对账通过。"""
+"""并发：不丢更新、并发开局后对账通过。"""
 
 from __future__ import annotations
 
@@ -6,8 +6,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app import db as dbmod
 from app.deps import Actor
-from app.errors import AppError
-from app.services import batches as batch_service
 from app.services import deposits as deposit_service
 from app.services import sessions as session_service
 from app.services.reconcile import reconcile
@@ -48,34 +46,7 @@ def test_concurrent_add_deposit_no_lost_update(client, admin_headers, admin) -> 
     ]
 
 
-def test_concurrent_close_only_one_wins(client, admin_headers, admin) -> None:
-    batch_id = client.post("/api/v1/batches", json={}, headers=admin_headers).json()["id"]
-    actor = make_actor(admin)
-
-    def task(_: int) -> str:
-        try:
-            with dbmod.write_session() as session:
-                batch_service.close_batch(
-                    session,
-                    actor,
-                    batch_id,
-                    tea_to_user_id=admin["id"],
-                    deposit_to_user_id=admin["id"],
-                )
-            return "ok"
-        except AppError:
-            return "rejected"
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(task, range(2)))
-
-    assert sorted(results) == ["ok", "rejected"]
-    detail = client.get(f"/api/v1/batches/{batch_id}", headers=admin_headers).json()
-    assert detail["status"] == "closed"
-
-
 def test_concurrent_sessions_keep_balances_consistent(client, admin_headers, admin) -> None:
-    batch_id = client.post("/api/v1/batches", json={}, headers=admin_headers).json()["id"]
     first = new_player(client, admin_headers, "并发甲")["id"]
     second = new_player(client, admin_headers, "并发乙")["id"]
     add_money(client, admin_headers, first, 1000)
@@ -87,7 +58,6 @@ def test_concurrent_sessions_keep_balances_consistent(client, admin_headers, adm
             session_service.open_session(
                 session,
                 actor,
-                batch_id=batch_id,
                 tea_fee_cents=100,
                 player_ids=[first, second],
             )
@@ -101,7 +71,7 @@ def test_concurrent_sessions_keep_balances_consistent(client, admin_headers, adm
         assert detail["games_played"] == 2
 
     listed = client.get(
-        "/api/v1/records/deposits", params={"batch_id": batch_id, "page_size": 50}, headers=admin_headers
+        "/api/v1/records/deposits", params={"page_size": 50}, headers=admin_headers
     ).json()
     # 两笔加押金 + 两局 × 两人
     assert listed["total"] == 6

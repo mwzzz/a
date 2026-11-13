@@ -50,6 +50,40 @@ class MerchantUpdateIn(BaseModel):
     status: Literal["active", "disabled"] | None = None
 
 
+class MerchantPurgeIn(BaseModel):
+    """清空商家经营数据。必须原样输入商家名，防止误点。"""
+
+    confirm_name: str = Field(min_length=1, max_length=64)
+    note: str = Field(default="", max_length=200)
+
+
+class QueueCreateIn(BaseModel):
+    game_id: str = Field(min_length=1, max_length=64)
+    note: str = Field(default="", max_length=100)
+
+
+class QueueStatusIn(BaseModel):
+    status: Literal["waiting", "playing", "done", "cancelled"]
+
+
+class ToolListCreateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=32)
+
+
+class ToolItemCreateIn(BaseModel):
+    content: str = Field(min_length=1, max_length=64)
+    note: str = Field(default="", max_length=100)
+
+
+class ToolItemUpdateIn(BaseModel):
+    content: str | None = Field(default=None, max_length=64)
+    note: str | None = Field(default=None, max_length=100)
+
+
+class ToolMoveIn(BaseModel):
+    direction: Literal["up", "down"]
+
+
 class AiPlayerRef(BaseModel):
     id: int
     game_id: str
@@ -81,6 +115,13 @@ class AiRecognizeOut(BaseModel):
 class AiStatusOut(BaseModel):
     enabled: bool
     model: str
+
+
+class DividendSettleIn(BaseModel):
+    user_ids: list[int] = Field(min_length=1, max_length=50)
+    date_from: str | None = Field(default=None, max_length=20)
+    date_to: str | None = Field(default=None, max_length=20)
+    note: str = Field(default="", max_length=200)
 
 
 class PlayerCreateIn(BaseModel):
@@ -130,7 +171,6 @@ class SessionPreviewIn(BaseModel):
 
 
 class SessionCreateIn(BaseModel):
-    batch_id: int | None = None
     name: str = Field(default="", max_length=64)
     played_at: str | None = None
     note: str = Field(default="", max_length=200)
@@ -143,4 +183,46 @@ class SettingsUpdateIn(BaseModel):
     deposit_low_cents: int | None = None
     deposit_high_cents: int | None = None
     dividend_rate_percent: int | None = Field(default=None, ge=0, le=100)
+    dividend_mode: Literal["percent", "fixed"] | None = None
+    dividend_fixed_cents: int | None = Field(default=None, ge=0, le=1_000_000)
     shop_name: str | None = Field(default=None, max_length=64)
+
+
+# ---------------- 查战绩（多用户版） ----------------
+
+
+class ZjLoginIn(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class ZjBatchCreateIn(BaseModel):
+    """一次「开始查询」：名单 1~10 人，只扣 1 次额度。"""
+
+    area_id: int = Field(ge=1, le=999)
+    all_count: int = Field(default=60, ge=1, le=100)
+    # 上限由 settings.zj_batch_max_players 决定（默认 10），这里放宽以免报 422
+    players: list[str] = Field(min_length=1, max_length=50)
+
+
+class ZjQueryIn(BaseModel):
+    nickname: str = Field(min_length=3, max_length=80)
+
+
+class ZjUserCreateIn(BaseModel):
+    username: str = Field(min_length=3, max_length=32)
+    password: str = Field(min_length=8, max_length=128)
+    display_name: str = Field(default="", max_length=64)
+    note: str = Field(default="", max_length=200)
+    quota_total: int = Field(default=0, ge=0, le=100_000)
+
+
+class ZjUserUpdateIn(BaseModel):
+    display_name: str | None = Field(default=None, max_length=64)
+    note: str | None = Field(default=None, max_length=200)
+    is_active: bool | None = None
+
+
+class ZjQuotaGrantIn(BaseModel):
+    delta: int = Field(ge=-100_000, le=100_000)
+    note: str = Field(default="", max_length=200)

@@ -14,18 +14,15 @@ from app.serializers import session_player_row, session_row
 from app.scope import scoped_get
 from app.services import options
 from app.services.audit import write_audit
-from app.services.batches import get_batch, get_open_batch
 from app.services.deposits import _write_entry, apply_delta
 from app.services.money import deposit_level
 from app.services.players import clean_text, get_player
-from app.timeutil import day_after_text, day_start_text, normalize_played_at, now_text, parse_text
+from app.timeutil import bound_end_text, bound_start_text, normalize_played_at, now_text, parse_text
 
 MAX_PLAYERS = 10
 
 
-def default_name(
-    session: Session, batch_id: int, played_at: str, merchant_id: int
-) -> str:
+def default_name(session: Session, played_at: str, merchant_id: int) -> str:
     day = parse_text(played_at)
     index = int(
         session.scalar(
@@ -33,7 +30,7 @@ def default_name(
             .select_from(GameSession)
             .where(
                 GameSession.merchant_id == merchant_id,
-                GameSession.batch_id == batch_id,
+                GameSession.played_at.startswith(day.isoformat()),
             )
         )
         or 0
@@ -97,7 +94,6 @@ def open_session(
     session: Session,
     actor: Actor,
     *,
-    batch_id: int | None = None,
     name: str = "",
     played_at: str | None = None,
     note: str = "",
@@ -114,15 +110,6 @@ def open_session(
         raise AppError(f"一局最多 {MAX_PLAYERS} 个人")
 
     merchant_id = actor.merchant_id
-    if batch_id is None:
-        batch = get_open_batch(session, merchant_id)
-        if batch is None:
-            raise AppError("当前没有进行中的批次，请先开班")
-    else:
-        batch = get_batch(session, batch_id, merchant_id)
-        if batch.status != "open":
-            raise AppError("这个批次已经交班了，不能开局")
-    batch_id = batch.id
 
     try:
         moment = normalize_played_at(played_at)
@@ -130,15 +117,12 @@ def open_session(
         raise AppError("场次时间格式不正确") from exc
 
     players = [get_player(session, player_id, merchant_id) for player_id in ids]
-    title = clean_text(name, "场次名称", 64) or default_name(
-        session, batch_id, moment, merchant_id
-    )
+    title = clean_text(name, "场次名称", 64) or default_name(session, moment, merchant_id)
     note_text = clean_text(note, "备注", 200)
     stamp = now_text()
 
     game = GameSession(
         merchant_id=merchant_id,
-        batch_id=batch_id,
         name=title,
         played_at=moment,
         tea_fee_cents=int(tea_fee_cents),
@@ -168,7 +152,7 @@ def open_session(
             amount_cents=int(tea_fee_cents),
             before=before,
             after=after,
-            batch_id=batch_id,
+            batch_id=None,
             session_id=game_id,
             note=note_text,
         )
@@ -209,7 +193,6 @@ def list_sessions(
     session: Session,
     merchant_id: int,
     *,
-    batch_id: int | None = None,
     keyword: str = "",
     date_from: str | None = None,
     date_to: str | None = None,
@@ -220,8 +203,6 @@ def list_sessions(
     page_size = min(200, max(1, int(page_size)))
 
     conditions = [GameSession.merchant_id == merchant_id]
-    if batch_id is not None:
-        conditions.append(GameSession.batch_id == batch_id)
     text = (keyword or "").strip()
     if text:
         like = f"%{text}%"
@@ -235,15 +216,11 @@ def list_sessions(
         )
     try:
         if date_from:
-            conditions.append(
-                GameSession.played_at >= day_start_text(date_cls.fromisoformat(date_from))
-            )
+            conditions.append(GameSession.played_at >= bound_start_text(date_from))
         if date_to:
-            conditions.append(
-                GameSession.played_at < day_after_text(date_cls.fromisoformat(date_to))
-            )
+            conditions.append(GameSession.played_at <= bound_end_text(date_to))
     except ValueError as exc:
-        raise AppError("日期格式不正确") from exc
+        raise AppError("时间格式不正确，应为 YYYY-MM-DD 或 YYYY-MM-DD HH:MM") from exc
 
     total = int(
         session.scalar(
@@ -281,13 +258,7 @@ def get_session_detail(session: Session, session_id: int, merchant_id: int) -> d
     players = list(
         session.scalars(select(SessionPlayer).where(SessionPlayer.session_id == session_id))
     )
-    data = session_row(game, players)
-    data["batch"] = (
-        {"id": game.batch.id, "label": game.batch.label, "opened_at": game.batch.opened_at}
-        if game.batch
-        else None
-    )
-    return data
+    return session_row(game, players)
 
 
 def session_preview_rows(

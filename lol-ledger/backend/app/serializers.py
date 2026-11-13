@@ -111,7 +111,6 @@ def session_row(
 ) -> dict:
     return {
         "id": session.id,
-        "batch_id": session.batch_id,
         "name": session.name,
         "played_at": session.played_at,
         "tea_fee_cents": int(session.tea_fee_cents),

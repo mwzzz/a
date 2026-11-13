@@ -165,9 +165,10 @@ def test_overview_shape(client, admin_headers) -> None:
     assert body["total_deposit_cents"] == 1000
     assert body["low_deposit_count"] == 1
     assert len(body["recent_records"]) == 1
-    assert "today" not in body
-    assert body["custody"]["amount_cents"] == 1000
-    assert body["custody"]["tea_cents"] == 0
+    assert body["today"]["session_count"] == 0
+    assert body["today"]["add_deposit_cents"] == 1000
+    assert body["today"]["cash_diff_cents"] == 1000
+    assert body["dividend_mode"] == "percent"
 
 
 def test_ai_status_shape(client, admin_headers) -> None:

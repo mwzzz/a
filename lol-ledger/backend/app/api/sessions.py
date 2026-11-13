@@ -14,7 +14,6 @@ router = APIRouter(prefix="/sessions", tags=["场次"])
 
 @router.get("")
 def list_sessions(
-    batch_id: int | None = None,
     keyword: str = "",
     date_from: str | None = None,
     date_to: str | None = None,
@@ -26,7 +25,6 @@ def list_sessions(
     return session_service.list_sessions(
         session,
         actor.merchant_id,
-        batch_id=batch_id,
         keyword=keyword,
         date_from=date_from,
         date_to=date_to,
@@ -67,7 +65,6 @@ def create_session(
     return session_service.open_session(
         session,
         actor,
-        batch_id=payload.batch_id,
         name=payload.name,
         played_at=payload.played_at,
         note=payload.note,

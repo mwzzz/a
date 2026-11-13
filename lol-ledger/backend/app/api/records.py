@@ -45,7 +45,6 @@ def deposit_records(
 @router.get("/sessions")
 def session_records(
     keyword: str = "",
-    batch_id: int | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
     page: int = 1,
@@ -57,7 +56,6 @@ def session_records(
         session,
         actor.merchant_id,
         keyword=keyword,
-        batch_id=batch_id,
         date_from=date_from,
         date_to=date_to,
         page=page,

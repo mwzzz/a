@@ -4,13 +4,18 @@ import type {
   AiRecognizePayload,
   AiStatus,
   AuthUser,
-  BatchRow,
-  BatchSummary,
-  CustodyInfo,
+  DividendPreview,
+  DividendSettlementRow,
   LedgerEntryRow,
+  MerchantPurgePreview,
+  MerchantPurgeResult,
+  OperatorSummary,
   OverviewPayload,
   Paged,
   PlatformMerchantRow,
+  QueueEntry,
+  QueuePayload,
+  QueueStatus,
   PlayerImportResult,
   PlayerOption,
   PlayerRow,
@@ -18,7 +23,14 @@ import type {
   ReconcilePayload,
   SessionRow,
   SettingsPayload,
+  ToolItemRow,
+  ToolListRow,
+  ToolListsPayload,
   UserOption,
+  ZjAdminList,
+  ZjAdminUser,
+  ZjLogs,
+  ZjOverview,
 } from './types'
 
 type Query = Record<string, string | number | boolean | undefined | null>
@@ -68,34 +80,11 @@ export const moneyApi = {
     http.post('/transfers', { from_player_id, to_player_id, amount_cents, note }).then((res) => res.data),
 }
 
-export const batchApi = {
-  list: (params: Query) => http.get('/batches', { params }).then((res) => res.data as Paged<BatchRow>),
-  current: () =>
+export const summaryApi = {
+  operators: (date_from?: string, date_to?: string) =>
     http
-      .get('/batches/current')
-      .then((res) => res.data as { batch: BatchRow | null; custody: CustodyInfo }),
-  create: (payload: { label?: string; note?: string }) =>
-    http.post('/batches', payload).then((res) => res.data as BatchRow),
-  get: (id: number) =>
-    http.get(`/batches/${id}`).then((res) => res.data as BatchRow & { custody: CustodyInfo }),
-  summary: (id: number) =>
-    http.get(`/batches/${id}/summary`).then((res) => res.data as BatchSummary),
-  close: (id: number, payload: Record<string, unknown>) =>
-    http.post(`/batches/${id}/close`, payload).then((res) => res.data as BatchSummary),
-  ledger: (id: number, params: Query) =>
-    http.get(`/batches/${id}/ledger`, { params }).then((res) => res.data as Paged<LedgerEntryRow>),
-}
-
-export async function downloadBatchCsv(batchId: number, label: string): Promise<void> {
-  const response = await http.get(`/batches/${batchId}/export.csv`, { responseType: 'blob' })
-  const url = URL.createObjectURL(response.data as Blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = `批次-${label || batchId}.csv`
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  URL.revokeObjectURL(url)
+      .get('/summary/operators', { params: { date_from, date_to } })
+      .then((res) => res.data as OperatorSummary),
 }
 
 export const sessionApi = {
@@ -115,6 +104,26 @@ export const recordApi = {
     http.get('/records/deposits', { params }).then((res) => res.data as Paged<LedgerEntryRow>),
   sessions: (params: Query) =>
     http.get('/records/sessions', { params }).then((res) => res.data as Paged<SessionRow>),
+}
+
+export const dividendApi = {
+  preview: (date_from?: string, date_to?: string) =>
+    http
+      .get('/reports/dividends/preview', { params: { date_from, date_to } })
+      .then((res) => res.data as DividendPreview),
+  settle: (payload: {
+    user_ids: number[]
+    date_from?: string
+    date_to?: string
+    note?: string
+  }) =>
+    http
+      .post('/reports/dividends/settle', payload)
+      .then((res) => res.data as DividendSettlementRow[]),
+  settlements: (page = 1, page_size = 10) =>
+    http
+      .get('/reports/dividends/settlements', { params: { page, page_size } })
+      .then((res) => res.data as Paged<DividendSettlementRow>),
 }
 
 export const overviewApi = {
@@ -139,6 +148,46 @@ export const accountApi = {
     http.post(`/users/${id}/password`, { new_password }),
 }
 
+export const toolListApi = {
+  list: () => http.get('/tools/name-lists').then((res) => res.data as ToolListsPayload),
+  createList: (name: string) =>
+    http.post('/tools/name-lists', { name }).then((res) => res.data as ToolListRow),
+  renameList: (id: number, name: string) =>
+    http.patch(`/tools/name-lists/${id}`, { name }).then((res) => res.data as ToolListRow),
+  deleteList: (id: number) => http.delete(`/tools/name-lists/${id}`),
+  moveList: (id: number, direction: 'up' | 'down') =>
+    http
+      .post(`/tools/name-lists/${id}/move`, { direction })
+      .then((res) => res.data as ToolListsPayload),
+  createItem: (listId: number, content: string, note = '') =>
+    http
+      .post(`/tools/name-lists/${listId}/items`, { content, note })
+      .then((res) => res.data as ToolItemRow),
+  updateItem: (listId: number, itemId: number, payload: { content?: string; note?: string }) =>
+    http
+      .patch(`/tools/name-lists/${listId}/items/${itemId}`, payload)
+      .then((res) => res.data as ToolItemRow),
+  deleteItem: (listId: number, itemId: number) =>
+    http.delete(`/tools/name-lists/${listId}/items/${itemId}`),
+  moveItem: (listId: number, itemId: number, direction: 'up' | 'down') =>
+    http
+      .post(`/tools/name-lists/${listId}/items/${itemId}/move`, { direction })
+      .then((res) => res.data as ToolItemRow),
+}
+
+export const queueApi = {
+  list: (day?: string) =>
+    http.get('/queue', { params: day ? { day } : {} }).then((res) => res.data as QueuePayload),
+  snapshot: (day?: string) =>
+    http
+      .get('/queue/snapshot', { params: day ? { day } : {} })
+      .then((res) => res.data as QueuePayload),
+  create: (payload: { game_id: string; note?: string }) =>
+    http.post('/queue', payload).then((res) => res.data as QueueEntry),
+  setStatus: (id: number, status: QueueStatus) =>
+    http.patch(`/queue/${id}`, { status }).then((res) => res.data as QueueEntry),
+}
+
 export const platformApi = {
   merchants: () =>
     http.get('/platform/merchants').then((res) => res.data as PlatformMerchantRow[]),
@@ -160,6 +209,32 @@ export const platformApi = {
     http.patch(`/platform/users/${id}`, payload).then((res) => res.data as AccountRow),
   resetPassword: (id: number, new_password: string) =>
     http.post(`/platform/users/${id}/password`, { new_password }),
+  purgePreview: (id: number) =>
+    http
+      .get(`/platform/merchants/${id}/purge-preview`)
+      .then((res) => res.data as MerchantPurgePreview),
+  purge: (id: number, payload: { confirm_name: string; note?: string }) =>
+    http
+      .post(`/platform/merchants/${id}/purge`, payload)
+      .then((res) => res.data as MerchantPurgeResult),
+}
+
+export const zjAdminApi = {
+  users: () => http.get('/platform/zj/users').then((res) => res.data as ZjAdminList),
+  create: (payload: Record<string, unknown>) =>
+    http.post('/platform/zj/users', payload).then((res) => res.data as ZjAdminUser),
+  update: (id: number, payload: Record<string, unknown>) =>
+    http.patch(`/platform/zj/users/${id}`, payload).then((res) => res.data as ZjAdminUser),
+  grant: (id: number, delta: number, note = '') =>
+    http
+      .post(`/platform/zj/users/${id}/quota`, { delta, note })
+      .then((res) => res.data as { user: ZjAdminUser; overview: ZjOverview }),
+  resetPassword: (id: number, new_password: string) =>
+    http.post(`/platform/zj/users/${id}/password`, { new_password }),
+  logs: (id: number, limit = 50, offset = 0) =>
+    http
+      .get(`/platform/zj/users/${id}/logs`, { params: { limit, offset } })
+      .then((res) => res.data as ZjLogs),
 }
 
 export const aiApi = {

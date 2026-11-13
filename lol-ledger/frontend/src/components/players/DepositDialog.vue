@@ -143,8 +143,8 @@ async function submit() {
   gap: 10px;
   padding: 10px 12px;
   margin-bottom: 16px;
-  background: #101319;
-  border: 1px solid #232833;
+  background: var(--app-bg-subtle);
+  border: 1px solid var(--app-border-strong);
   border-radius: 8px;
 }
 

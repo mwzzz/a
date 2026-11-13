@@ -1,103 +1,131 @@
 <template>
   <div class="page">
     <div class="page-head">
-      <span class="page-title">总览</span>
-      <span class="page-sub">今天和这一班的情况</span>
+      <span class="page-title">工作台</span>
+      <span class="page-sub">这一班的现金、营业和待处理事项</span>
       <div class="spacer"></div>
       <el-button :icon="Refresh" @click="load">刷新</el-button>
     </div>
 
-    <div v-loading="loading" class="cards">
+    <div v-loading="loading" class="hero panel">
+      <div class="hero-main">
+        <div class="hero-top">
+          <StatusTag type="success" :label="`今天 ${data?.today.session_count || 0} 局`" />
+          <span class="muted">{{ data?.date || '' }}</span>
+        </div>
+        <div class="hero-cash">
+          <span class="hero-label">玩家押金总额</span>
+          <b>¥{{ formatCents(data?.total_deposit_cents || 0) }}</b>
+        </div>
+        <div class="hero-meta">
+          <span>{{ data?.player_count || 0 }} 个在用玩家</span>
+          <span class="sep">·</span>
+          <span>今日茶水 <b>¥{{ formatCents(data?.today.tea_cents || 0) }}</b></span>
+          <span class="sep">·</span>
+          <span>今日差额 <b>¥{{ formatCents(data?.today.cash_diff_cents || 0) }}</b></span>
+        </div>
+      </div>
+      <div class="hero-actions">
+        <el-button type="primary" :icon="VideoPlay" @click="openSession">开一局</el-button>
+        <el-button :icon="Wallet" @click="goPlayers">加押金</el-button>
+        <el-button :icon="TrendCharts" @click="router.push({ name: 'summary' })">看汇总</el-button>
+      </div>
+    </div>
+
+    <div class="metric-grid">
       <StatCard
-        label="玩家押金余额"
-        :value="'¥' + formatCents(data?.total_deposit_cents || 0)"
-        :hint="`${data?.player_count || 0} 个在用玩家`"
+        label="今日茶水"
+        :value="'¥' + formatCents(data?.today.tea_cents || 0)"
+        tone="good"
+        :hint="`${data?.today.session_count || 0} 局 · ${data?.today.player_times || 0} 人次`"
+      />
+      <StatCard
+        label="今日收押金"
+        :value="'¥' + formatCents(data?.today.add_deposit_cents || 0)"
+        :hint="`退押金 ¥${formatCents(data?.today.refund_cents || 0)}`"
       />
       <StatCard
         label="押金不足"
         :value="`${data?.low_deposit_count || 0} 人`"
         :tone="(data?.low_deposit_count || 0) > 0 ? 'bad' : 'default'"
-        :hint="`低于 ¥${formatCents(data?.deposit_low_cents || 3000)} 需要催补`"
-      />
-      <StatCard
-        label="本班茶水"
-        :value="'¥' + formatCents(data?.open_batch?.summary.tea_total_cents || 0)"
-        tone="good"
-        :hint="`${data?.open_batch?.summary.session_count || 0} 局 · ${data?.open_batch?.summary.player_times || 0} 人次`"
-      />
-      <StatCard
-        label="本班收押金"
-        :value="'¥' + formatCents(data?.open_batch?.summary.add_total_cents || 0)"
-        :hint="`退押金 ¥${formatCents(data?.open_batch?.summary.refund_total_cents || 0)}`"
-      />
-      <StatCard
-        label="在库现金"
-        :value="'¥' + formatCents(data?.custody.amount_cents || 0)"
-        :hint="`保管人：${data?.custody.holder?.display_name || '未设置'}`"
+        :hint="`低于 ¥${formatCents(data?.deposit_low_cents || 3000)}，点此去催补`"
+        @click="goPlayers"
       />
     </div>
 
-    <div class="two-col">
+    <div class="work-grid">
       <div class="panel block">
-        <div class="section-title">本班流水</div>
-        <div class="mini-grid">
-          <div class="mini"><span>局数</span><b>{{ data?.open_batch?.summary.session_count || 0 }}</b></div>
-          <div class="mini"><span>人次</span><b>{{ data?.open_batch?.summary.player_times || 0 }}</b></div>
-          <div class="mini"><span>茶水</span><b>¥{{ formatCents(data?.open_batch?.summary.tea_total_cents || 0) }}</b></div>
-          <div class="mini"><span>收押金</span><b>¥{{ formatCents(data?.open_batch?.summary.add_total_cents || 0) }}</b></div>
-          <div class="mini"><span>退押金</span><b>¥{{ formatCents(data?.open_batch?.summary.refund_total_cents || 0) }}</b></div>
-          <div class="mini"><span>划转笔数</span><b>{{ data?.open_batch?.summary.transfer_count || 0 }}</b></div>
-          <div class="mini"><span>划转金额</span><b>¥{{ formatCents(data?.open_batch?.summary.transfer_out_total_cents || 0) }}</b></div>
-        </div>
-        <div v-if="!data?.open_batch" class="muted small" style="margin-top: 10px">
-          当前没有进行中的班次，本班统计从下一次开班开始。
-        </div>
-      </div>
-
-      <div class="panel block">
-        <div class="section-title">当前批次</div>
-        <template v-if="data?.open_batch">
-          <div class="batch-line">
-            <span class="dot"></span>
-            <b>{{ batchLabel }}</b>
-            <span class="dim-tag">进行中</span>
-          </div>
-          <div class="custody-line">
-            <span class="muted">在库现金</span>
-            <b>¥{{ formatCents(data.custody.amount_cents) }}</b>
-            <span class="muted">保管人 {{ data.custody.holder?.display_name || '未设置' }}</span>
-          </div>
-          <div class="mini-grid">
-            <div class="mini"><span>局数</span><b>{{ data.open_batch.summary.session_count }}</b></div>
-            <div class="mini"><span>人次</span><b>{{ data.open_batch.summary.player_times }}</b></div>
-            <div class="mini"><span>茶水</span><b>¥{{ formatCents(data.open_batch.summary.tea_total_cents) }}</b></div>
-            <div class="mini"><span>玩家押金余额</span><b>¥{{ formatCents(data.open_batch.summary.deposit_total_cents) }}</b></div>
-          </div>
-          <div v-if="data.open_batch.operators.length" class="op-list">
-            <div class="op-head">
-              操作人 · 分红 {{ data.open_batch.dividend_rate_percent }}%
-            </div>
-            <div v-for="op in data.open_batch.operators" :key="op.user?.id || 'unknown'" class="op-row">
-              <span class="op-name">{{ op.user?.display_name || '未知' }}</span>
-              <span class="muted">{{ op.session_count }} 局 · {{ op.player_times }} 人次</span>
-              <span class="mono">茶 ¥{{ formatCents(op.tea_cents) }}</span>
-              <b class="div">分红 ¥{{ formatCents(op.dividend_cents) }}</b>
-            </div>
-          </div>
-          <el-button class="go" type="primary" plain @click="router.push({ name: 'batches' })">
-            去看这一班的场次
+        <div class="section-head">
+          <div class="section-title">今日概览</div>
+          <span class="muted small">
+            {{
+              data?.dividend_mode === 'fixed'
+                ? `每局 ¥${formatCents(data?.dividend_fixed_cents || 0)} 分红`
+                : `茶水分红 ${data?.dividend_rate_percent || 0}%`
+            }}
+          </span>
+          <div class="spacer"></div>
+          <el-button link type="primary" @click="router.push({ name: 'summary' })">
+            操作人汇总
           </el-button>
-        </template>
-        <template v-else>
-          <div class="no-batch">
-            <div class="muted">现在没有进行中的批次</div>
-            <el-button type="primary" plain @click="router.push({ name: 'batches' })">去开班</el-button>
+        </div>
+        <div class="mini-grid">
+          <div class="mini"><span>局数</span><b>{{ data?.today.session_count || 0 }}</b></div>
+          <div class="mini"><span>人次</span><b>{{ data?.today.player_times || 0 }}</b></div>
+          <div class="mini"><span>茶水</span><b>¥{{ formatCents(data?.today.tea_cents || 0) }}</b></div>
+          <div class="mini"><span>分红</span><b>¥{{ formatCents(data?.today.dividend_cents || 0) }}</b></div>
+        </div>
+        <div class="mini-grid">
+          <div class="mini"><span>收押金</span><b>¥{{ formatCents(data?.today.add_deposit_cents || 0) }}</b></div>
+          <div class="mini"><span>退押金</span><b>¥{{ formatCents(data?.today.refund_cents || 0) }}</b></div>
+          <div class="mini"><span>差额</span><b>¥{{ formatCents(data?.today.cash_diff_cents || 0) }}</b></div>
+          <div class="mini"><span>押金余额</span><b>¥{{ formatCents(data?.total_deposit_cents || 0) }}</b></div>
+        </div>
+        <div class="empty-inline">
+          差额 = 收押金 − 退押金：正数是店员该交给店长的现金，负数是店长该补给店员的。
+        </div>
+      </div>
+
+      <div class="panel block">
+        <div class="section-title">待处理</div>
+        <div class="todo-list">
+          <div class="todo-item" :class="{ alert: (data?.low_deposit_count || 0) > 0 }">
+            <div>
+              <b>{{ data?.low_deposit_count || 0 }} 个玩家押金不足</b>
+              <span class="muted">低于 ¥{{ formatCents(data?.deposit_low_cents || 3000) }}</span>
+            </div>
+            <el-button link type="primary" @click="goPlayers">去处理</el-button>
           </div>
-        </template>
+          <div class="todo-item">
+            <div>
+              <b>今日收押金 ¥{{ formatCents(data?.today.add_deposit_cents || 0) }}</b>
+              <span class="muted">退押金 ¥{{ formatCents(data?.today.refund_cents || 0) }}</span>
+            </div>
+            <el-button link type="primary" @click="goPlayers">记一笔</el-button>
+          </div>
+          <div class="todo-item">
+            <div>
+              <b>今日已开 {{ data?.today.session_count || 0 }} 局</b>
+              <span class="muted">
+                茶水 ¥{{ formatCents(data?.today.tea_cents || 0) }}，分红
+                ¥{{ formatCents(data?.today.dividend_cents || 0) }}
+              </span>
+            </div>
+            <el-button link type="primary" @click="router.push({ name: 'summary' })">去对账</el-button>
+          </div>
+        </div>
+        <div class="quick-actions">
+          <el-button :icon="Upload" @click="router.push({ name: 'players', query: { import: '1' } })">
+            批量导入玩家
+          </el-button>
+          <el-button :icon="TrendCharts" @click="router.push({ name: 'reports' })">
+            看报表
+          </el-button>
+        </div>
       </div>
     </div>
 
-    <div class="panel">
+    <div class="panel desktop-only">
       <div class="recent-head">
         <div class="section-title">最近流水</div>
         <div class="spacer"></div>
@@ -136,36 +164,67 @@
       </el-table>
       <div v-if="!loading && !data?.recent_records?.length" class="empty-hint">还没有流水</div>
     </div>
+
+    <div class="panel mobile-only recent-mobile">
+      <div class="recent-head">
+        <div class="section-title">最近流水</div>
+        <div class="spacer"></div>
+        <el-button link type="primary" @click="router.push({ name: 'records' })">查看全部</el-button>
+      </div>
+      <div class="recent-cards">
+        <div v-for="row in data?.recent_records || []" :key="row.id" class="recent-card">
+          <div class="recent-card-head">
+            <span class="cell-main">{{ row.player.game_id }}</span>
+            <MoneyText :cents="row.signed_amount_cents" change />
+          </div>
+          <div class="cell-sub">
+            {{ row.reason_label }}
+            <template v-if="row.note"> · {{ row.note }}</template>
+          </div>
+          <div class="recent-card-meta">
+            <span>{{ formatShort(row.created_at) }}</span>
+            <span class="mono">余额 ¥{{ formatCents(row.balance_after_cents) }}</span>
+            <span>{{ row.operator?.display_name || '-' }}</span>
+          </div>
+        </div>
+        <div v-if="!loading && !data?.recent_records?.length" class="empty-hint">还没有流水</div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { Refresh } from '@element-plus/icons-vue'
-import { computed, onMounted, ref } from 'vue'
+import { Refresh, TrendCharts, Upload, VideoPlay, Wallet } from '@element-plus/icons-vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { overviewApi } from '@/api'
 import type { OverviewPayload } from '@/api/types'
 import MoneyText from '@/components/common/MoneyText.vue'
 import StatCard from '@/components/common/StatCard.vue'
+import StatusTag from '@/components/common/StatusTag.vue'
+import { useAppStore } from '@/stores/app'
 import { formatShort } from '@/utils/datetime'
 import { formatCents } from '@/utils/money'
 
 const router = useRouter()
+const app = useAppStore()
 const data = ref<OverviewPayload | null>(null)
 const loading = ref(false)
 
-const batchLabel = computed(() => {
-  const batch = data.value?.open_batch
-  if (!batch) return ''
-  const time = formatShort(batch.opened_at)
-  return batch.label || `${time} 开班`
-})
+function openSession() {
+  router.push({ name: 'summary', query: { new: '1' } })
+}
+
+function goPlayers() {
+  router.push({ name: 'players' })
+}
 
 async function load() {
   loading.value = true
   try {
     data.value = await overviewApi.get()
+    void app.refreshToday()
   } finally {
     loading.value = false
   }
@@ -204,8 +263,8 @@ onMounted(load)
   flex-direction: column;
   gap: 4px;
   padding: 9px 11px;
-  background: #101319;
-  border: 1px solid #1c2028;
+  background: var(--app-bg-subtle);
+  border: 1px solid var(--app-border);
   border-radius: 8px;
 }
 
@@ -250,7 +309,7 @@ onMounted(load)
 
 .op-list {
   margin-top: 12px;
-  border-top: 1px solid #1c2028;
+  border-top: 1px solid var(--app-border);
   padding-top: 8px;
 }
 
@@ -303,5 +362,208 @@ onMounted(load)
 
 .recent-head .section-title {
   margin: 0;
+}
+
+.recent-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 14px;
+}
+
+.recent-card {
+  padding: 10px 12px;
+  background: var(--app-bg-subtle);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-sm);
+}
+
+.recent-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.recent-card-head :deep(.amount) {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.recent-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--app-text-muted);
+}
+
+.hero {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 20px 22px;
+  margin-bottom: 12px;
+  background: linear-gradient(135deg, var(--app-bg-panel), var(--app-bg-subtle));
+}
+
+.hero-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.hero-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.hero-cash {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.hero-label {
+  font-size: 12.5px;
+  color: var(--app-text-muted);
+}
+
+.hero-cash b {
+  font-size: 30px;
+  letter-spacing: -0.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--el-text-color-primary);
+}
+
+.hero-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--app-text-muted);
+}
+
+.hero-meta b {
+  color: var(--el-text-color-regular);
+}
+
+.hero-meta .sep {
+  color: var(--app-border-strong);
+}
+
+.hero-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.work-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.section-head .section-title {
+  margin: 0;
+}
+
+.empty-inline {
+  padding: 14px 0 4px;
+  font-size: 12.5px;
+  color: var(--app-text-muted);
+}
+
+.todo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.todo-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-sm);
+  background: var(--app-bg-subtle);
+}
+
+.todo-item > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12.5px;
+}
+
+.todo-item b {
+  font-weight: 600;
+}
+
+.todo-item .muted {
+  font-size: 11.5px;
+}
+
+.todo-item.alert {
+  background: var(--app-warning-soft);
+  border-color: rgba(230, 162, 60, 0.28);
+}
+
+.quick-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 768px) {
+  .hero {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    padding: 16px;
+  }
+
+  .hero-cash b {
+    font-size: 26px;
+  }
+
+  .hero-actions {
+    justify-content: flex-start;
+  }
+
+  .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .work-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mini-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 </style>

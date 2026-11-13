@@ -1,6 +1,6 @@
 <template>
-  <div class="page">
-    <div class="page-head">
+  <div class="page" :class="{ embedded }">
+    <div v-if="!embedded" class="page-head">
       <span class="page-title">记录管理</span>
       <span class="page-sub">押金变动与场次流水，最新在前</span>
     </div>
@@ -19,11 +19,13 @@
 
       <el-date-picker
         v-model="dateRange"
-        type="daterange"
-        value-format="YYYY-MM-DD"
-        start-placeholder="开始日期"
-        end-placeholder="结束日期"
-        style="width: 260px"
+        type="datetimerange"
+        value-format="YYYY-MM-DDTHH:mm"
+        format="MM-DD HH:mm"
+        start-placeholder="开始时间"
+        end-placeholder="结束时间"
+        :shortcuts="shortcuts"
+        style="width: 320px"
         @change="reload"
       />
 
@@ -43,7 +45,7 @@
 
     <el-tabs v-model="tab" @tab-change="onTabChange">
       <el-tab-pane label="押金记录" name="deposits">
-        <div class="panel">
+        <div class="panel desktop-only">
           <el-table v-loading="loading" :data="entries">
             <el-table-column label="时间" width="168">
               <template #default="{ row }">
@@ -84,10 +86,32 @@
           </el-table>
           <div v-if="!loading && !entries.length" class="empty-hint">没有记录</div>
         </div>
+
+        <div class="mobile-only">
+          <div v-loading="loading" class="record-cards">
+            <div v-for="row in entries" :key="row.id" class="record-card">
+              <div class="record-card-head">
+                <span class="cell-main">{{ row.player.game_id }}</span>
+                <MoneyText :cents="row.signed_amount_cents" change />
+              </div>
+              <div class="cell-sub">
+                {{ row.reason_label }}
+                <template v-if="row.note"> · {{ row.note }}</template>
+              </div>
+              <div class="record-card-meta">
+                <span>{{ formatFull(row.created_at) }}</span>
+                <span class="mono">余额 ¥{{ formatCents(row.balance_after_cents) }}</span>
+                <span>{{ row.operator?.display_name || '-' }}</span>
+                <span v-if="row.session">{{ row.session.name }}</span>
+              </div>
+            </div>
+            <div v-if="!loading && !entries.length" class="empty-hint">没有记录</div>
+          </div>
+        </div>
       </el-tab-pane>
 
       <el-tab-pane label="场次记录" name="sessions">
-        <div class="panel">
+        <div class="panel desktop-only">
           <el-table v-loading="loading" :data="sessions">
             <el-table-column label="时间" width="140">
               <template #default="{ row }">
@@ -127,6 +151,26 @@
           </el-table>
           <div v-if="!loading && !sessions.length" class="empty-hint">没有记录</div>
         </div>
+
+        <div class="mobile-only">
+          <div v-loading="loading" class="record-cards">
+            <div v-for="row in sessions" :key="row.id" class="record-card">
+              <div class="record-card-head">
+                <span class="cell-main">{{ row.name }}</span>
+                <span class="mono">{{ row.player_count }} 人</span>
+              </div>
+              <div class="cell-sub">
+                茶水 ¥{{ formatCents(row.tea_fee_cents) }}/人 · 合计 ¥{{ formatCents(row.tea_total_cents) }}
+              </div>
+              <div class="record-card-meta">
+                <span>{{ formatShort(row.played_at) }}</span>
+                <span>操作人 {{ row.operator?.display_name || '-' }}</span>
+              </div>
+              <div class="record-card-players">{{ row.players.map((p) => p.game_id).join('、') }}</div>
+            </div>
+            <div v-if="!loading && !sessions.length" class="empty-hint">没有记录</div>
+          </div>
+        </div>
       </el-tab-pane>
     </el-tabs>
 
@@ -152,11 +196,14 @@ import { useRoute } from 'vue-router'
 import { recordApi } from '@/api'
 import type { LedgerEntryRow, SessionRow } from '@/api/types'
 import MoneyText from '@/components/common/MoneyText.vue'
-import { formatFull, formatShort } from '@/utils/datetime'
+import { formatFull, formatShort, momentShortcuts } from '@/utils/datetime'
 import { formatCents } from '@/utils/money'
 
 const route = useRoute()
 
+withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
+
+const shortcuts = momentShortcuts()
 const tab = ref<'deposits' | 'sessions'>('deposits')
 const keyword = ref('')
 const dateRange = ref<[string, string] | null>(null)
@@ -230,6 +277,50 @@ onMounted(() => {
   white-space: nowrap;
 }
 
+.record-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.record-card {
+  padding: 12px 14px;
+  background: var(--app-bg-panel);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+}
+
+.record-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+.record-card-head :deep(.amount) {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.record-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--app-text-muted);
+}
+
+.record-card-players {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--app-border);
+  font-size: 12px;
+  color: var(--app-text-muted);
+  line-height: 1.6;
+}
+
 .players {
   display: inline-block;
   max-width: 100%;
@@ -242,5 +333,10 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
   padding-top: 14px;
+}
+
+.page.embedded {
+  max-width: none;
+  padding: 0;
 }
 </style>

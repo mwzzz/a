@@ -1,14 +1,29 @@
 #!/usr/bin/env bash
-# 在本机（Git Bash）执行，构建前端并上传到服务器。
-#   SERVER=admin@47.95.146.168 bash deploy/push.sh
-#   指定私钥：SSH_KEY=/c/Users/me/.ssh/id_ed25519 SERVER=root@1.2.3.4 bash deploy/push.sh
-# 要求：本机能 ssh 到服务器（密钥登录），服务器上已跑过一次 install.sh。
+# 在本机（Git Bash / macOS / Linux）执行：构建前端并上传到服务器。
+#   默认发布到新服务器：root@116.62.242.2，密钥 ~/.ssh/_mw.pem
+#   换机器：SERVER=root@1.2.3.4 SSH_KEY=/path/to/key bash deploy/push.sh
+# 要求：本机能用密钥 ssh 到服务器（密码登录已禁用），服务器上已跑过一次 install.sh。
 set -euo pipefail
 
-SERVER="${SERVER:-admin@47.95.146.168}"
+SERVER="${SERVER:-root@116.62.242.2}"
 URL_HOST="${URL_HOST:-${SERVER#*@}}"
-SSH_KEY="${SSH_KEY:-}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# 默认密钥：新服务器的 _mw.pem。原文件在 Downloads 下权限过宽，OpenSSH 会拒绝加载，
+# 所以复制到 ~/.ssh 并 chmod 600（Windows 用 icacls）。
+SSH_KEY="${SSH_KEY:-}"
+if [ -z "$SSH_KEY" ]; then
+  for candidate in "$HOME/.ssh/_mw.pem" "/c/Users/Administrator/.ssh/_mw.pem"; do
+    if [ -f "$candidate" ]; then
+      SSH_KEY="$candidate"
+      break
+    fi
+  done
+fi
+if [ -n "$SSH_KEY" ] && [ ! -f "$SSH_KEY" ]; then
+  echo "找不到密钥：$SSH_KEY" >&2
+  exit 1
+fi
 
 SSH_ARGS=()
 if [ -n "$SSH_KEY" ]; then
@@ -26,7 +41,7 @@ tar -czf - -C "$ROOT" \
   --exclude='backend/data' \
   --exclude='backend/.env' \
   backend deploy \
-  | ssh_run "$SERVER" "sudo mkdir -p /opt/lol-ledger && sudo tar -xzf - -C /opt/lol-ledger && if id lol >/dev/null 2>&1; then sudo chown -R lol:lol /opt/lol-ledger/backend /opt/lol-ledger/deploy; fi"
+  | ssh_run "$SERVER" "sudo mkdir -p /opt/lol-ledger; if [ -d /opt/lol-ledger/backend ]; then sudo mkdir -p /opt/lol-ledger/data/backups; sudo tar -czf /opt/lol-ledger/data/backups/code-\$(TZ=Asia/Shanghai date +%Y%m%d-%H%M%S).tar.gz -C /opt/lol-ledger backend deploy frontend/dist; sudo ls -1t /opt/lol-ledger/data/backups/code-*.tar.gz | tail -n +6 | xargs -r sudo rm -f; fi; sudo tar -xzf - -C /opt/lol-ledger && if id lol >/dev/null 2>&1; then sudo chown -R lol:lol /opt/lol-ledger/backend /opt/lol-ledger/deploy; sudo find /opt/lol-ledger/deploy -type f -name '*.sh' -exec chmod 755 {} +; fi"
 
 echo "==> 上传前端静态文件"
 tar -czf - -C "$ROOT/frontend" dist \
