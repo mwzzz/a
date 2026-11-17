@@ -175,3 +175,73 @@ def test_ai_status_shape(client, admin_headers) -> None:
     status = client.get("/api/v1/ai/status", headers=admin_headers).json()
     assert isinstance(status["enabled"], bool)
     assert isinstance(status["model"], str)
+
+
+def test_records_filter_by_operator(
+    client, admin_headers, staff_headers, admin, staff
+) -> None:
+    player = new_player(client, admin_headers, "操作人哥")
+    peer = new_player(client, admin_headers, "操作人弟")
+    pid = player["id"]
+
+    add_money(client, admin_headers, pid, 1000)
+    client.post(
+        f"/api/v1/players/{pid}/refunds",
+        json={"amount_cents": 200},
+        headers=staff_headers,
+    )
+    add_money(client, staff_headers, pid, 500)
+    client.post(
+        "/api/v1/transfers",
+        json={"from_player_id": pid, "to_player_id": peer["id"], "amount_cents": 300},
+        headers=staff_headers,
+    )
+
+    admin_rows = client.get(
+        "/api/v1/records/deposits",
+        params={"operator_id": admin["id"]},
+        headers=admin_headers,
+    ).json()
+    assert admin_rows["total"] == 1
+    assert admin_rows["items"][0]["operator"]["id"] == admin["id"]
+
+    staff_rows = client.get(
+        "/api/v1/records/deposits",
+        params={"operator_id": staff["id"]},
+        headers=admin_headers,
+    ).json()
+    assert staff_rows["total"] == 4
+    assert all(item["operator"]["id"] == staff["id"] for item in staff_rows["items"])
+
+    create_session(client, staff_headers, open_batch(client, staff_headers), [pid], tea=100)
+    create_session(client, admin_headers, open_batch(client, admin_headers), [pid], tea=100)
+    staff_sessions = client.get(
+        "/api/v1/records/sessions",
+        params={"operator_id": staff["id"]},
+        headers=admin_headers,
+    ).json()
+    assert staff_sessions["total"] == 1
+    assert staff_sessions["items"][0]["operator"]["id"] == staff["id"]
+
+    staff_cash = client.get(
+        "/api/v1/records/operator-summary",
+        params={"operator_id": staff["id"]},
+        headers=admin_headers,
+    ).json()
+    assert staff_cash["add_deposit_cents"] == 500
+    assert staff_cash["refund_cents"] == 200
+    assert staff_cash["cash_diff_cents"] == 300
+    assert staff_cash["entry_count"] == 2
+
+    admin_cash = client.get(
+        "/api/v1/records/operator-summary",
+        params={"operator_id": admin["id"]},
+        headers=admin_headers,
+    ).json()
+    assert admin_cash["add_deposit_cents"] == 1000
+    assert admin_cash["refund_cents"] == 0
+    assert admin_cash["cash_diff_cents"] == 1000
+    assert admin_cash["entry_count"] == 1
+
+    operators = client.get("/api/v1/records/operators", headers=admin_headers).json()
+    assert {item["id"] for item in operators} >= {admin["id"], staff["id"]}

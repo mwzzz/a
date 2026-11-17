@@ -12,6 +12,7 @@ from app.deps import Actor
 from app.models import Player
 
 FUZZY_THRESHOLD = 0.72
+AUTO_MATCH_THRESHOLD = 0.8
 
 STOPWORDS = {
     "空",
@@ -47,11 +48,16 @@ def base_name(value: object) -> str:
 
 
 def player_ref(player: Player) -> dict:
+    deposit_cents = int(player.deposit_cents)
+    bonus_cents = int(player.bonus_cents)
     return {
         "id": player.id,
         "game_id": player.game_id,
         "account": player.account,
-        "deposit_cents": player.deposit_cents,
+        "deposit_cents": deposit_cents,
+        "bonus_cents": bonus_cents,
+        "balance_cents": deposit_cents + bonus_cents,
+        "is_blacklisted": bool(player.is_blacklisted),
     }
 
 
@@ -154,6 +160,19 @@ def match_players(session: Session, actor: Actor, recognized: list[dict]) -> lis
             key=lambda item: item[1],
             reverse=True,
         )
+        if scored and scored[0][1] >= AUTO_MATCH_THRESHOLD:
+            player = scored[0][0]
+            items.append(
+                {
+                    "raw_name": row["name"],
+                    "status": "matched",
+                    "confidence": row["confidence"],
+                    "team": row["team"],
+                    "matched_player": player_ref(player),
+                    "candidates": [],
+                }
+            )
+            continue
         candidates = [
             {"player": player_ref(player), "score": round(score, 3)}
             for player, score in scored[:3]

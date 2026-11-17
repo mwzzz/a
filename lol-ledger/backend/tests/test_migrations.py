@@ -229,13 +229,48 @@ CREATE TABLE IF NOT EXISTS sessions (
 )
 """
 
+LEGACY_LEDGER_DDL = """
+CREATE TABLE IF NOT EXISTS ledger (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    merchant_id            INTEGER NOT NULL REFERENCES merchants(id),
+    player_id              INTEGER NOT NULL REFERENCES players(id),
+    batch_id               INTEGER REFERENCES batches(id),
+    session_id             INTEGER REFERENCES sessions(id),
+    reason                 TEXT    NOT NULL CHECK (reason IN (
+                               'normal_deduct', 'manual_deduct', 'refund',
+                               'add_deposit', 'transfer_out', 'transfer_in')),
+    amount_cents           INTEGER NOT NULL,
+    balance_before_cents   INTEGER NOT NULL,
+    balance_after_cents    INTEGER NOT NULL,
+    counterparty_player_id INTEGER REFERENCES players(id),
+    transfer_group_id      TEXT,
+    operator_id            INTEGER NOT NULL REFERENCES users(id),
+    note                   TEXT    NOT NULL DEFAULT '',
+    created_at             TEXT    NOT NULL,
+
+    CHECK (balance_after_cents = balance_before_cents
+           + CASE WHEN reason IN ('add_deposit', 'transfer_in') THEN amount_cents
+                  ELSE -amount_cents END),
+    CHECK ((reason IN ('normal_deduct', 'manual_deduct') AND amount_cents >= 0)
+        OR (reason NOT IN ('normal_deduct', 'manual_deduct') AND amount_cents > 0)),
+    CHECK ((reason IN ('transfer_out', 'transfer_in')
+            AND counterparty_player_id IS NOT NULL
+            AND transfer_group_id IS NOT NULL)
+        OR reason NOT IN ('transfer_out', 'transfer_in'))
+)
+"""
+
 
 def _ddl_for(version: int) -> tuple[list[str], list[str]]:
-    """用当前 DDL 拼出旧版本结构：<3 去超管，<4 去保管/分红，<5 去结算表，<6 去分红方式，<8 场次仍挂在班次上。"""
+    """用当前 DDL 拼出旧版本结构：<3 去超管，<4 去保管/分红，<5 去结算表，<6 去分红方式，<8 场次仍挂在班次上，<12 用旧 ledger 且去掉赠金/活动。"""
     statements = []
     for statement in migrations.TABLE_STATEMENTS:
         if version < 8 and "CREATE TABLE IF NOT EXISTS sessions" in statement:
             statement = LEGACY_SESSIONS_DDL
+        if version < 12 and "CREATE TABLE IF NOT EXISTS ledger" in statement:
+            statement = LEGACY_LEDGER_DDL
+        if version < 12 and "recharge_campaigns" in statement:
+            continue
         if version < 4 and "cash_handovers" in statement:
             continue
         if version < 5 and "dividend_settlement" in statement:
@@ -246,6 +281,17 @@ def _ddl_for(version: int) -> tuple[list[str], list[str]]:
             continue
         if version < 9 and "zj_" in statement:
             continue
+        if version < 11:
+            statement = re.sub(
+                r"^\s*is_blacklisted[^\n]*\n", "", statement, flags=re.MULTILINE
+            )
+        if version < 12:
+            statement = re.sub(
+                r"^\s*bonus_cents\s+INTEGER[^\n]*\n",
+                "",
+                statement,
+                flags=re.MULTILINE,
+            )
         if version < 3:
             statement = re.sub(
                 r"^\s*is_system\s+INTEGER[^\n]*\n", "", statement, flags=re.MULTILINE
@@ -575,6 +621,94 @@ def test_upgrade_v9_adds_tool_lists(tmp_path) -> None:
 
         dbmod.ensure_schema()
         assert len(list((tmp_path / "backups").glob("pre-v10-*.db"))) == 1
+    finally:
+        dbmod.dispose()
+
+
+def test_upgrade_v10_adds_player_blacklist(tmp_path) -> None:
+    path = tmp_path / "v10.db"
+    _build_old_db(path, 10)
+    dbmod.configure_db(path)
+    try:
+        dbmod.ensure_schema()
+        conn = sqlite3.connect(path)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(players)").fetchall()
+            }
+            assert "is_blacklisted" in columns
+            assert (
+                conn.execute(
+                    "SELECT is_blacklisted FROM players WHERE game_id='老玩家'"
+                ).fetchone()[0]
+                == 0
+            )
+            assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        finally:
+            conn.close()
+        assert len(list((tmp_path / "backups").glob("pre-v11-*.db"))) == 1
+
+        dbmod.ensure_schema()
+        assert len(list((tmp_path / "backups").glob("pre-v11-*.db"))) == 1
+    finally:
+        dbmod.dispose()
+
+
+def test_upgrade_v11_adds_bonus_and_campaigns(tmp_path) -> None:
+    path = tmp_path / "v11.db"
+    _build_old_db(path, 11)
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "INSERT INTO sessions (merchant_id, name, played_at, tea_fee_cents, note,"
+            " operator_id, player_count, created_at)"
+            " VALUES (1, '迁移前场次', ?, 100, '', 1, 1, ?)",
+            (STAMP, STAMP),
+        )
+        conn.execute(
+            "INSERT INTO session_players (session_id, player_id, tea_fee_cents,"
+            " balance_before_cents, balance_after_cents, ledger_id)"
+            " VALUES (1, 1, 100, 1000, 900, 2)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    dbmod.configure_db(path)
+    try:
+        dbmod.ensure_schema()
+        conn = sqlite3.connect(path)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+            player_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(players)").fetchall()
+            }
+            assert "bonus_cents" in player_columns
+            assert conn.execute("SELECT bonus_cents FROM players").fetchone()[0] == 0
+
+            ledger_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(ledger)").fetchall()
+            }
+            assert {"bonus_amount_cents", "deposit_after_cents", "bonus_after_cents"} <= ledger_columns
+            old_rows = conn.execute(
+                "SELECT bonus_amount_cents, deposit_after_cents, bonus_after_cents "
+                "FROM ledger ORDER BY id"
+            ).fetchall()
+            assert old_rows == [(0, 1000, 0), (0, 900, 0)]
+            assert conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 2
+            linked = conn.execute(
+                "SELECT sp.ledger_id, l.reason FROM session_players sp "
+                "JOIN ledger l ON l.id = sp.ledger_id"
+            ).fetchone()
+            assert linked == (2, "manual_deduct")
+            assert _table_exists(path, "recharge_campaigns")
+            assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        finally:
+            conn.close()
+
+        assert len(list((tmp_path / "backups").glob("pre-v12-*.db"))) == 1
+        dbmod.ensure_schema()
+        assert len(list((tmp_path / "backups").glob("pre-v12-*.db"))) == 1
     finally:
         dbmod.dispose()
 

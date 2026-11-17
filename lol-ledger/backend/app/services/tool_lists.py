@@ -8,49 +8,34 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.defaults import DEFAULT_TOOL_LISTS
 from app.deps import Actor
 from app.errors import AppError, NotFoundError
 from app.models import ToolItem, ToolList
+from app.services.ai_matching import base_name
 from app.services.audit import write_audit
 from app.timeutil import now_text
 
 MAX_LISTS = 20
 MAX_ITEMS = 200
+TEA_FREE_LIST_NAME = "免茶水"
 
 
-def create_default_lists(session: Session, merchant_id: int) -> None:
-    """给新开的商家建预置分类与条目（已存在则跳过，幂等）。"""
-    stamp = now_text()
-    for index, (name, items) in enumerate(DEFAULT_TOOL_LISTS):
-        exists = session.scalar(
-            select(ToolList).where(
-                ToolList.merchant_id == merchant_id, ToolList.name == name
-            )
+def tea_free_name_keys(session: Session, merchant_id: int) -> set[str]:
+    """「免茶水」分类里的名字，按游戏 id 口径归一化（忽略 #后缀和大小写）。"""
+    row = session.scalar(
+        select(ToolList).where(
+            ToolList.merchant_id == merchant_id,
+            ToolList.name == TEA_FREE_LIST_NAME,
         )
-        if exists is not None:
-            continue
-        row = ToolList(
-            merchant_id=merchant_id,
-            name=name,
-            sort_order=index,
-            created_at=stamp,
-            updated_at=stamp,
-        )
-        session.add(row)
-        session.flush()
-        for order, content in enumerate(items):
-            session.add(
-                ToolItem(
-                    list_id=row.id,
-                    merchant_id=merchant_id,
-                    content=content,
-                    note="",
-                    sort_order=order,
-                    created_at=stamp,
-                )
-            )
-    session.flush()
+    )
+    if row is None:
+        return set()
+    keys: set[str] = set()
+    for item in row.items:
+        key = base_name(item.content)
+        if key:
+            keys.add(key)
+    return keys
 
 
 def _clean(value: str, field: str, limit: int) -> str:

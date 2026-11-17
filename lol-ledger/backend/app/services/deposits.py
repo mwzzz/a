@@ -1,5 +1,6 @@
-"""加押金、退押金、划转。所有金额变动都走 apply_delta。
+"""加押金、退押金、划转、赠金。所有金额变动都走这里。
 
+现金押金和赠金分开记：deposit_cents 只能退/划，bonus_cents 只能扣茶水。
 每一次读写都带 merchant_id：别家的玩家与批次在这里一律当作不存在。
 """
 
@@ -12,23 +13,24 @@ from sqlalchemy.orm import Session
 
 from app.deps import Actor
 from app.errors import AppError, NotFoundError
-from app.models import Batch, LedgerEntry, Player
+from app.models import Batch, LedgerEntry, Player, RechargeCampaign
 from app.serializers import entry_payload, player_row
+from app.services import campaigns as campaign_service
 from app.services import options
-from app.services.money import require_positive
+from app.services.money import format_yuan, require_positive
 from app.services.players import clean_text, get_player
 from app.timeutil import now_text
 
 
-def apply_delta(
+def apply_cash_delta(
     session: Session,
     player_id: int,
     delta_cents: int,
     *,
     merchant_id: int,
     games_delta: int = 0,
-) -> tuple[int, int]:
-    """在 SQL 层做自增，返回 (变动前, 变动后)。必须在写事务里调用。"""
+) -> tuple[int, int, int, int]:
+    """只改现金押金，返回 (现金前, 现金后, 赠金前, 赠金后)。"""
     stamp = now_text()
     result = session.execute(
         update(Player)
@@ -47,14 +49,74 @@ def apply_delta(
     if result.rowcount == 0:
         raise NotFoundError("找不到玩家")
     session.expire_all()
-    after = session.scalar(
-        select(Player.deposit_cents).where(
+    row = session.execute(
+        select(Player.deposit_cents, Player.bonus_cents).where(
             Player.id == player_id, Player.merchant_id == merchant_id
         )
-    )
-    if after is None:
+    ).one_or_none()
+    if row is None:
         raise NotFoundError("找不到玩家")
-    return int(after) - int(delta_cents), int(after)
+    cash_after, bonus = int(row[0]), int(row[1])
+    return cash_after - int(delta_cents), cash_after, bonus, bonus
+
+
+def apply_bonus_delta(
+    session: Session,
+    player_id: int,
+    delta_cents: int,
+    *,
+    merchant_id: int,
+) -> tuple[int, int, int, int]:
+    """只改赠金，返回 (现金前, 现金后, 赠金前, 赠金后)。"""
+    stamp = now_text()
+    result = session.execute(
+        update(Player)
+        .where(
+            Player.id == player_id,
+            Player.merchant_id == merchant_id,
+            Player.deleted_at.is_(None),
+        )
+        .values(
+            bonus_cents=Player.bonus_cents + int(delta_cents),
+            updated_at=stamp,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount == 0:
+        raise NotFoundError("找不到玩家")
+    session.expire_all()
+    row = session.execute(
+        select(Player.deposit_cents, Player.bonus_cents).where(
+            Player.id == player_id, Player.merchant_id == merchant_id
+        )
+    ).one_or_none()
+    if row is None:
+        raise NotFoundError("找不到玩家")
+    cash, bonus_after = int(row[0]), int(row[1])
+    return cash, cash, bonus_after - int(delta_cents), bonus_after
+
+
+def apply_tea_deduction(
+    session: Session,
+    player_id: int,
+    tea_cents: int,
+    *,
+    merchant_id: int,
+) -> tuple[int, int, int, int, int]:
+    """先扣赠金、再扣现金，返回现金前/后、赠金前/后、赠金抵扣额。"""
+    player = get_player(session, player_id, merchant_id)
+    cash_before = int(player.deposit_cents)
+    bonus_before = int(player.bonus_cents)
+    bonus_used = min(bonus_before, int(tea_cents))
+    cash_used = int(tea_cents) - bonus_used
+    cash_after = cash_before - cash_used
+    bonus_after = bonus_before - bonus_used
+    player.deposit_cents = cash_after
+    player.bonus_cents = bonus_after
+    player.games_played = int(player.games_played) + 1
+    player.updated_at = now_text()
+    session.flush()
+    return cash_before, cash_after, bonus_before, bonus_after, bonus_used
 
 
 def current_batch_id(session: Session, merchant_id: int) -> int | None:
@@ -78,8 +140,11 @@ def _write_entry(
     player_id: int,
     reason: str,
     amount_cents: int,
-    before: int,
-    after: int,
+    deposit_before: int,
+    deposit_after: int,
+    bonus_before: int,
+    bonus_after: int,
+    bonus_amount_cents: int = 0,
     batch_id: int | None,
     session_id: int | None = None,
     counterparty_player_id: int | None = None,
@@ -93,8 +158,11 @@ def _write_entry(
         session_id=session_id,
         reason=reason,
         amount_cents=int(amount_cents),
-        balance_before_cents=int(before),
-        balance_after_cents=int(after),
+        balance_before_cents=int(deposit_before) + int(bonus_before),
+        balance_after_cents=int(deposit_after) + int(bonus_after),
+        bonus_amount_cents=int(bonus_amount_cents),
+        deposit_after_cents=int(deposit_after),
+        bonus_after_cents=int(bonus_after),
         counterparty_player_id=counterparty_player_id,
         transfer_group_id=transfer_group_id,
         operator_id=actor.id,
@@ -112,12 +180,14 @@ def add_deposit(
     player_id: int,
     amount_cents: int,
     note: str = "",
+    *,
+    apply_campaign: bool = True,
 ) -> dict:
     require_positive(amount_cents, "加押金金额必须大于 0")
     merchant_id = actor.merchant_id
     get_player(session, player_id, merchant_id)
     clean = clean_text(note, "备注", 200)
-    before, after = apply_delta(
+    cash_before, cash_after, bonus_before, bonus_after = apply_cash_delta(
         session, player_id, int(amount_cents), merchant_id=merchant_id
     )
     entry = _write_entry(
@@ -126,8 +196,76 @@ def add_deposit(
         player_id=player_id,
         reason="add_deposit",
         amount_cents=amount_cents,
-        before=before,
-        after=after,
+        deposit_before=cash_before,
+        deposit_after=cash_after,
+        bonus_before=bonus_before,
+        bonus_after=bonus_after,
+        batch_id=current_batch_id(session, merchant_id),
+        note=clean,
+    )
+
+    campaign = (
+        campaign_service.best_for_amount(session, merchant_id, int(amount_cents))
+        if apply_campaign
+        else None
+    )
+    bonus_entry: LedgerEntry | None = None
+    if campaign is not None and int(campaign.bonus_cents) > 0:
+        bonus_amount = int(campaign.bonus_cents)
+        cash, cash_again, gift_before, gift_after = apply_bonus_delta(
+            session, player_id, bonus_amount, merchant_id=merchant_id
+        )
+        bonus_entry = _write_entry(
+            session,
+            actor=actor,
+            player_id=player_id,
+            reason="add_bonus",
+            amount_cents=bonus_amount,
+            deposit_before=cash,
+            deposit_after=cash_again,
+            bonus_before=gift_before,
+            bonus_after=gift_after,
+            bonus_amount_cents=bonus_amount,
+            batch_id=current_batch_id(session, merchant_id),
+            note=(
+                f"充值活动：满 ¥{format_yuan(campaign.threshold_cents)} "
+                f"送 ¥{format_yuan(campaign.bonus_cents)}"
+            ),
+        )
+
+    return {
+        "entry": entry_payload(session, entry),
+        "bonus_entry": entry_payload(session, bonus_entry) if bonus_entry else None,
+        "campaign": campaign_service.campaign_row(campaign) if campaign else None,
+        "player": _player_payload(session, player_id, merchant_id),
+    }
+
+
+def add_bonus(
+    session: Session,
+    actor: Actor,
+    player_id: int,
+    amount_cents: int,
+    note: str = "",
+) -> dict:
+    require_positive(amount_cents, "加赠金金额必须大于 0")
+    merchant_id = actor.merchant_id
+    get_player(session, player_id, merchant_id)
+    clean = clean_text(note, "备注", 200) or "手动加赠金"
+    cash, cash_again, bonus_before, bonus_after = apply_bonus_delta(
+        session, player_id, int(amount_cents), merchant_id=merchant_id
+    )
+    entry = _write_entry(
+        session,
+        actor=actor,
+        player_id=player_id,
+        reason="add_bonus",
+        amount_cents=amount_cents,
+        deposit_before=cash,
+        deposit_after=cash_again,
+        bonus_before=bonus_before,
+        bonus_after=bonus_after,
+        bonus_amount_cents=amount_cents,
         batch_id=current_batch_id(session, merchant_id),
         note=clean,
     )
@@ -146,21 +284,28 @@ def refund(
 ) -> dict:
     require_positive(amount_cents, "退押金金额必须大于 0")
     merchant_id = actor.merchant_id
-    get_player(session, player_id, merchant_id)
+    player = get_player(session, player_id, merchant_id)
+    if int(player.bonus_cents) > 0:
+        raise AppError(
+            f"该玩家还有赠金 ¥{format_yuan(player.bonus_cents)}，赠金不能退；"
+            "请先用赠金扣茶水，赠金为 0 后再退押金"
+        )
+    if int(amount_cents) > int(player.deposit_cents):
+        raise AppError("押金不足，不能退这么多")
     clean = clean_text(note, "备注", 200)
-    before, after = apply_delta(
+    cash_before, cash_after, bonus_before, bonus_after = apply_cash_delta(
         session, player_id, -int(amount_cents), merchant_id=merchant_id
     )
-    if after < 0:
-        raise AppError("押金不足，不能退这么多")
     entry = _write_entry(
         session,
         actor=actor,
         player_id=player_id,
         reason="refund",
         amount_cents=amount_cents,
-        before=before,
-        after=after,
+        deposit_before=cash_before,
+        deposit_after=cash_after,
+        bonus_before=bonus_before,
+        bonus_after=bonus_after,
         batch_id=current_batch_id(session, merchant_id),
         note=clean,
     )
@@ -182,16 +327,23 @@ def transfer(
         raise AppError("不能划给自己")
     require_positive(amount_cents, "划转金额必须大于 0")
     merchant_id = actor.merchant_id
-    get_player(session, from_player_id, merchant_id)
+    source_player = get_player(session, from_player_id, merchant_id)
     get_player(session, to_player_id, merchant_id)
+    if (
+        int(source_player.bonus_cents) > 0
+        and int(amount_cents) > int(source_player.deposit_cents)
+    ):
+        raise AppError(
+            f"赠金不能划转，最多可划现金押金 ¥{format_yuan(source_player.deposit_cents)}"
+        )
     clean = clean_text(note, "备注", 200)
 
     group = uuid4().hex
     batch_id = current_batch_id(session, merchant_id)
-    source_before, source_after = apply_delta(
+    source_before, source_after, source_bonus_before, source_bonus_after = apply_cash_delta(
         session, from_player_id, -int(amount_cents), merchant_id=merchant_id
     )
-    target_before, target_after = apply_delta(
+    target_before, target_after, target_bonus_before, target_bonus_after = apply_cash_delta(
         session, to_player_id, int(amount_cents), merchant_id=merchant_id
     )
 
@@ -201,8 +353,10 @@ def transfer(
         player_id=from_player_id,
         reason="transfer_out",
         amount_cents=amount_cents,
-        before=source_before,
-        after=source_after,
+        deposit_before=source_before,
+        deposit_after=source_after,
+        bonus_before=source_bonus_before,
+        bonus_after=source_bonus_after,
         batch_id=batch_id,
         counterparty_player_id=to_player_id,
         transfer_group_id=group,
@@ -214,8 +368,10 @@ def transfer(
         player_id=to_player_id,
         reason="transfer_in",
         amount_cents=amount_cents,
-        before=target_before,
-        after=target_after,
+        deposit_before=target_before,
+        deposit_after=target_after,
+        bonus_before=target_bonus_before,
+        bonus_after=target_bonus_after,
         batch_id=batch_id,
         counterparty_player_id=from_player_id,
         transfer_group_id=group,

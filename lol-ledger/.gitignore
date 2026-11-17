@@ -6,6 +6,7 @@ node_modules/
 frontend/dist/
 frontend/.vite/
 data/
+!frontend/src/data/
 *.db
 *.db-wal
 *.db-shm

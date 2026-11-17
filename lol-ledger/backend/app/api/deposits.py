@@ -24,6 +24,18 @@ def add_deposit(
     )
 
 
+@router.post("/players/{player_id}/bonus", status_code=201)
+def add_bonus(
+    player_id: int,
+    payload: AmountIn,
+    actor: Actor = Depends(get_current_user),
+    session: Session = Depends(get_write_db),
+) -> dict:
+    return deposit_service.add_bonus(
+        session, actor, player_id, payload.amount_cents, payload.note
+    )
+
+
 @router.post("/players/{player_id}/refunds", status_code=201)
 def refund(
     player_id: int,

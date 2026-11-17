@@ -466,3 +466,17 @@ def test_purge_rejects_platform_merchant(client, superadmin_headers, superadmin)
         == 404
     )
     assert _purge(client, superadmin_headers, platform_id, "平台管理").status_code == 404
+
+
+def test_new_merchant_has_empty_tool_lists(client, superadmin_headers) -> None:
+    _new_merchant(
+        client,
+        superadmin_headers,
+        name="空白名单店",
+        admin_username="blank-boss",
+    )
+    login = _login(client, "blank-boss")
+    assert login.status_code == 200, login.text
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    payload = client.get("/api/v1/tools/name-lists", headers=headers).json()
+    assert payload == {"lists": []}

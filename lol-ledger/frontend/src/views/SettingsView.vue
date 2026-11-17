@@ -21,7 +21,7 @@
             <el-form-item label="押金不足线">
               <el-input v-model="form.low" :disabled="!auth.isAdmin" autocomplete="off">
                 <template #prefix>¥</template>
-                <template #suffix>低于这个数显示红色</template>
+                <template #suffix>低于这个数算押金不足</template>
               </el-input>
             </el-form-item>
             <el-form-item label="押金充足线">
@@ -64,7 +64,49 @@
           </el-form>
           <div class="note">
             押金颜色规则：低于不足线红色，介于两者之间黄色，高于充足线绿色。开局扣茶水时如果余额不够会扣成负数。<br />
-            分红方式：按茶水比例时，操作人分红 = 本人茶水 × 比例；每局固定时，操作人分红 = 本人局数 × 每局金额，与茶水多少无关。改动只影响之后关班的班次，已关班次的金额不变。
+            分红方式：按茶水比例时，操作人分红 = 本人茶水 × 比例；每局固定时，操作人分红 = 本人局数 × 每局金额，与茶水多少无关。改动只影响之后开局的场次，已开局场次的金额不变。
+          </div>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane v-if="auth.isAdmin" label="充值活动" name="recharge">
+        <div class="panel campaign-panel">
+          <div class="check-head">
+            <div>
+              <div class="check-title">充值活动</div>
+              <div class="muted small">
+                加押金时自动按满足条件的最高档送一次赠金；批量导入玩家不赠送。赠金只能扣茶水，不能退款或划押。
+              </div>
+            </div>
+            <div class="spacer"></div>
+            <el-button type="primary" :icon="Plus" @click="openCampaign()">新增档位</el-button>
+            <el-button :icon="Refresh" :loading="campaignLoading" @click="loadCampaigns">
+              刷新
+            </el-button>
+          </div>
+
+          <div v-if="campaignError" class="campaign-state">
+            <span>充值活动加载失败，请检查网络或服务后重试。</span>
+            <el-button type="primary" size="small" @click="loadCampaigns">重试</el-button>
+          </div>
+          <el-table v-else v-loading="campaignLoading" :data="campaigns" class="campaign-table">
+            <el-table-column label="充值满" min-width="180">
+              <template #default="{ row }">¥{{ formatCents(row.threshold_cents) }}</template>
+            </el-table-column>
+            <el-table-column label="赠送赠金" min-width="180">
+              <template #default="{ row }">
+                <span class="gift-text">¥{{ formatCents(row.bonus_cents) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="150" align="right">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openCampaign(row)">编辑</el-button>
+                <el-button link type="danger" @click="removeCampaign(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div v-if="!campaignLoading && !campaignError && !campaigns.length" class="empty-hint">
+            还没有充值活动
           </div>
         </div>
       </el-tab-pane>
@@ -196,22 +238,33 @@
             <div class="check-line">
               <el-icon><CircleCheck v-if="report.ok" /><Warning v-else /></el-icon>
               <span v-if="report.ok">
-                数据一致，共检查 {{ report.checked }} 个玩家，押金合计 ¥{{ formatCents(report.total_deposit_cents) }}
+                数据一致，共检查 {{ report.checked }} 个玩家，押金合计
+                ¥{{ formatCents(report.total_deposit_cents) }}，赠金合计
+                ¥{{ formatCents(report.total_bonus_cents) }}
               </span>
               <span v-else>
                 发现 {{ report.problems.length }} 个异常，请立即检查
               </span>
             </div>
             <el-table v-if="!report.ok" :data="report.problems" size="small">
-              <el-table-column prop="game_id" label="玩家" min-width="140" />
-              <el-table-column label="记录的押金" width="130" align="right">
+              <el-table-column prop="game_id" label="玩家" min-width="130" />
+              <el-table-column label="现金记录" width="110" align="right">
                 <template #default="{ row }">¥{{ formatCents(row.stored_cents) }}</template>
               </el-table-column>
-              <el-table-column label="流水合计" width="130" align="right">
+              <el-table-column label="现金流水" width="110" align="right">
                 <template #default="{ row }">¥{{ formatCents(row.ledger_sum_cents) }}</template>
               </el-table-column>
-              <el-table-column label="最后余额" width="130" align="right">
+              <el-table-column label="现金末条" width="110" align="right">
                 <template #default="{ row }">¥{{ formatCents(row.last_balance_cents) }}</template>
+              </el-table-column>
+              <el-table-column label="赠金记录" width="110" align="right">
+                <template #default="{ row }">¥{{ formatCents(row.stored_bonus_cents) }}</template>
+              </el-table-column>
+              <el-table-column label="赠金流水" width="110" align="right">
+                <template #default="{ row }">¥{{ formatCents(row.ledger_bonus_sum_cents) }}</template>
+              </el-table-column>
+              <el-table-column label="赠金末条" width="110" align="right">
+                <template #default="{ row }">¥{{ formatCents(row.last_bonus_cents) }}</template>
               </el-table-column>
             </el-table>
           </div>
@@ -244,6 +297,35 @@
       </template>
     </el-dialog>
 
+    <el-dialog
+      v-model="campaignVisible"
+      :title="campaignEditingId ? '编辑充值档位' : '新增充值档位'"
+      width="420px"
+      :close-on-click-modal="false"
+    >
+      <el-form label-width="96px">
+        <el-form-item label="充值满" required>
+          <el-input v-model="campaignForm.threshold" placeholder="100.00" autocomplete="off">
+            <template #prefix>¥</template>
+          </el-input>
+        </el-form-item>
+        <el-form-item label="赠送赠金" required>
+          <el-input v-model="campaignForm.bonus" placeholder="20.00" autocomplete="off">
+            <template #prefix>¥</template>
+          </el-input>
+        </el-form-item>
+      </el-form>
+      <div class="campaign-tip">
+        同一笔充值只赠送一次，取满足金额的最高档。赠金不能退款、不能划押，只能扣茶水。
+      </div>
+      <template #footer>
+        <el-button @click="campaignVisible = false">取消</el-button>
+        <el-button type="primary" :loading="campaignSaving" @click="saveCampaign">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="resetVisible" title="重置密码" width="400px" :close-on-click-modal="false">
       <div class="reset-who">给 <b>{{ resetTarget?.username }}</b> 设置新密码</div>
       <el-input v-model="resetPassword" type="password" show-password placeholder="至少 8 位，含字母和数字" />
@@ -257,11 +339,11 @@
 
 <script setup lang="ts">
 import { CircleCheck, Plus, Refresh, Warning } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { onMounted, reactive, ref, watch } from 'vue'
 
-import { accountApi, overviewApi, settingsApi } from '@/api'
-import type { AccountRow, DividendMode, ReconcilePayload } from '@/api/types'
+import { accountApi, campaignApi, overviewApi, settingsApi } from '@/api'
+import type { AccountRow, DividendMode, RechargeCampaign, ReconcilePayload } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { formatShort } from '@/utils/datetime'
 import { formatCents, parseYuan } from '@/utils/money'
@@ -288,6 +370,14 @@ const accountForm = reactive({ username: '', display_name: '', role: 'staff', pa
 
 const editingId = ref<number | null>(null)
 const editingName = ref('')
+
+const campaigns = ref<RechargeCampaign[]>([])
+const campaignLoading = ref(false)
+const campaignError = ref(false)
+const campaignVisible = ref(false)
+const campaignSaving = ref(false)
+const campaignEditingId = ref<number | null>(null)
+const campaignForm = reactive({ threshold: '', bonus: '' })
 
 const resetVisible = ref(false)
 const resetTarget = ref<AccountRow | null>(null)
@@ -371,6 +461,68 @@ async function loadAccounts() {
   }
 }
 
+async function loadCampaigns() {
+  if (!auth.isAdmin) return
+  campaignLoading.value = true
+  campaignError.value = false
+  try {
+    campaigns.value = await campaignApi.list()
+  } catch {
+    campaigns.value = []
+    campaignError.value = true
+  } finally {
+    campaignLoading.value = false
+  }
+}
+
+function openCampaign(row?: RechargeCampaign) {
+  campaignEditingId.value = row?.id || null
+  campaignForm.threshold = row ? formatCents(row.threshold_cents) : ''
+  campaignForm.bonus = row ? formatCents(row.bonus_cents) : ''
+  campaignVisible.value = true
+}
+
+async function saveCampaign() {
+  const threshold = parseYuan(campaignForm.threshold)
+  const bonus = parseYuan(campaignForm.bonus)
+  if (threshold === null || bonus === null || threshold <= 0 || bonus <= 0) {
+    ElMessage.warning('充值金额和赠送赠金都要大于 0')
+    return
+  }
+  campaignSaving.value = true
+  try {
+    if (campaignEditingId.value) {
+      await campaignApi.update(campaignEditingId.value, {
+        threshold_cents: threshold,
+        bonus_cents: bonus,
+      })
+      ElMessage.success('充值活动已更新')
+    } else {
+      await campaignApi.create({ threshold_cents: threshold, bonus_cents: bonus })
+      ElMessage.success('充值活动已新增')
+    }
+    campaignVisible.value = false
+    await loadCampaigns()
+  } finally {
+    campaignSaving.value = false
+  }
+}
+
+async function removeCampaign(row: RechargeCampaign) {
+  try {
+    await ElMessageBox.confirm(
+      `删除「满 ¥${formatCents(row.threshold_cents)} 送 ¥${formatCents(row.bonus_cents)}」？已产生的赠金不受影响。`,
+      '删除充值档位',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  await campaignApi.remove(row.id)
+  ElMessage.success('已删除')
+  await loadCampaigns()
+}
+
 function openCreateAccount() {
   accountForm.username = ''
   accountForm.display_name = ''
@@ -445,6 +597,7 @@ async function submitReset() {
 
 watch(tab, (value) => {
   if (value === 'accounts') loadAccounts()
+  if (value === 'recharge') loadCampaigns()
 })
 
 onMounted(async () => {
@@ -483,6 +636,39 @@ onMounted(async () => {
 
 .check-panel {
   padding: 16px 18px;
+}
+
+.campaign-panel {
+  padding: 16px 18px;
+}
+
+.campaign-table {
+  margin-top: 14px;
+}
+
+.campaign-state {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-bg-subtle);
+  font-size: 12.5px;
+  color: var(--el-text-color-secondary);
+}
+
+.gift-text {
+  color: var(--el-color-success);
+  font-weight: 600;
+}
+
+.campaign-tip {
+  margin-top: 4px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--el-text-color-secondary);
 }
 
 .check-head {

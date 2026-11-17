@@ -89,6 +89,9 @@ class AiPlayerRef(BaseModel):
     game_id: str
     account: str = ""
     deposit_cents: int
+    bonus_cents: int = 0
+    balance_cents: int
+    is_blacklisted: bool = False
 
 
 class AiCandidateOut(BaseModel):
@@ -129,6 +132,7 @@ class PlayerCreateIn(BaseModel):
     nickname: str = Field(default="", max_length=64)
     account: str = Field(default="", max_length=64)
     remark: str = Field(default="", max_length=200)
+    is_blacklisted: bool = False
 
 
 class PlayerUpdateIn(BaseModel):
@@ -136,11 +140,17 @@ class PlayerUpdateIn(BaseModel):
     nickname: str | None = Field(default=None, max_length=64)
     account: str | None = Field(default=None, max_length=64)
     remark: str | None = Field(default=None, max_length=200)
+    is_blacklisted: bool | None = None
 
 
 class AmountIn(BaseModel):
     amount_cents: int
     note: str = Field(default="", max_length=200)
+
+
+class RechargeCampaignIn(BaseModel):
+    threshold_cents: int = Field(gt=0)
+    bonus_cents: int = Field(gt=0)
 
 
 class TransferIn(BaseModel):

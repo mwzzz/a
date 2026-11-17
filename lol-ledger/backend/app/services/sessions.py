@@ -13,29 +13,31 @@ from app.models import GameSession, Player, SessionPlayer
 from app.serializers import session_player_row, session_row
 from app.scope import scoped_get
 from app.services import options
+from app.services.ai_matching import base_name
 from app.services.audit import write_audit
-from app.services.deposits import _write_entry, apply_delta
+from app.services.deposits import _write_entry, apply_tea_deduction
 from app.services.money import deposit_level
 from app.services.players import clean_text, get_player
+from app.services.tool_lists import tea_free_name_keys
 from app.timeutil import bound_end_text, bound_start_text, normalize_played_at, now_text, parse_text
 
 MAX_PLAYERS = 10
 
 
 def default_name(session: Session, played_at: str, merchant_id: int) -> str:
-    day = parse_text(played_at)
+    moment = parse_text(played_at)
     index = int(
         session.scalar(
             select(func.count())
             .select_from(GameSession)
             .where(
                 GameSession.merchant_id == merchant_id,
-                GameSession.played_at.startswith(day.isoformat()),
+                GameSession.played_at.startswith(moment.date().isoformat()),
             )
         )
         or 0
     )
-    return f"{day.month}月{day.day}日 第{index + 1}局"
+    return f"{moment.month}月{moment.day}日 第{index + 1}局"
 
 
 def _unique_ids(player_ids: list[int]) -> list[int]:
@@ -61,12 +63,21 @@ def preview_session(
     if len(ids) > MAX_PLAYERS:
         raise AppError(f"一局最多 {MAX_PLAYERS} 个人")
     low, high = options.thresholds(session, merchant_id)
+    tea_free = tea_free_name_keys(session, merchant_id)
 
     items: list[dict] = []
+    removed: list[str] = []
     for player_id in ids:
         player = get_player(session, player_id, merchant_id)
-        before = int(player.deposit_cents)
-        after = before - int(tea_fee_cents)
+        if base_name(player.game_id) in tea_free:
+            removed.append(player.game_id)
+            continue
+        before = int(player.deposit_cents) + int(player.bonus_cents)
+        bonus_before = int(player.bonus_cents)
+        bonus_used = min(bonus_before, int(tea_fee_cents))
+        cash_after = int(player.deposit_cents) - (int(tea_fee_cents) - bonus_used)
+        bonus_after = bonus_before - bonus_used
+        after = cash_after + bonus_after
         items.append(
             {
                 "player_id": player.id,
@@ -75,6 +86,11 @@ def preview_session(
                 "before_cents": before,
                 "deduct_cents": int(tea_fee_cents),
                 "after_cents": after,
+                "deposit_before_cents": int(player.deposit_cents),
+                "deposit_after_cents": cash_after,
+                "bonus_before_cents": bonus_before,
+                "bonus_after_cents": bonus_after,
+                "bonus_deduct_cents": bonus_used,
                 "level": deposit_level(after, low, high),
                 "negative": after < 0,
             }
@@ -87,6 +103,7 @@ def preview_session(
         "tea_total_cents": int(tea_fee_cents) * len(items),
         "negative_count": len(negative),
         "negative_players": [item["game_id"] for item in negative],
+        "tea_free_removed": removed,
     }
 
 
@@ -117,6 +134,22 @@ def open_session(
         raise AppError("场次时间格式不正确") from exc
 
     players = [get_player(session, player_id, merchant_id) for player_id in ids]
+    blocked = [player.game_id for player in players if player.is_blacklisted]
+    if blocked:
+        raise AppError("黑名单玩家不能开局：" + "、".join(blocked))
+
+    tea_free = tea_free_name_keys(session, merchant_id)
+    kept: list[Player] = []
+    removed: list[str] = []
+    for player in players:
+        if base_name(player.game_id) in tea_free:
+            removed.append(player.game_id)
+        else:
+            kept.append(player)
+    if not kept:
+        raise AppError("选中的玩家都在免茶水名单里，不能开局")
+    players = kept
+
     title = clean_text(name, "场次名称", 64) or default_name(session, moment, merchant_id)
     note_text = clean_text(note, "备注", 200)
     stamp = now_text()
@@ -136,13 +169,19 @@ def open_session(
     game_id = game.id
 
     members: list[SessionPlayer] = []
-    for player_id in ids:
-        before, after = apply_delta(
+    for player in players:
+        player_id = player.id
+        (
+            cash_before,
+            cash_after,
+            bonus_before,
+            bonus_after,
+            bonus_used,
+        ) = apply_tea_deduction(
             session,
             player_id,
-            -int(tea_fee_cents),
+            int(tea_fee_cents),
             merchant_id=merchant_id,
-            games_delta=1,
         )
         entry = _write_entry(
             session,
@@ -150,8 +189,11 @@ def open_session(
             player_id=player_id,
             reason="normal_deduct",
             amount_cents=int(tea_fee_cents),
-            before=before,
-            after=after,
+            deposit_before=cash_before,
+            deposit_after=cash_after,
+            bonus_before=bonus_before,
+            bonus_after=bonus_after,
+            bonus_amount_cents=bonus_used,
             batch_id=None,
             session_id=game_id,
             note=note_text,
@@ -160,8 +202,8 @@ def open_session(
             session_id=game_id,
             player_id=player_id,
             tea_fee_cents=int(tea_fee_cents),
-            balance_before_cents=before,
-            balance_after_cents=after,
+            balance_before_cents=cash_before + bonus_before,
+            balance_after_cents=cash_after + bonus_after,
             ledger_id=entry.id,
         )
         session.add(member)
@@ -182,7 +224,9 @@ def open_session(
     )
 
     refreshed = get_session_model(session, game_id, merchant_id)
-    return session_row(refreshed, members)
+    data = session_row(refreshed, members)
+    data["tea_free_removed"] = removed
+    return data
 
 
 def get_session_model(session: Session, session_id: int, merchant_id: int) -> GameSession:
@@ -196,6 +240,7 @@ def list_sessions(
     keyword: str = "",
     date_from: str | None = None,
     date_to: str | None = None,
+    operator_id: int | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> dict:
@@ -203,6 +248,8 @@ def list_sessions(
     page_size = min(200, max(1, int(page_size)))
 
     conditions = [GameSession.merchant_id == merchant_id]
+    if operator_id is not None:
+        conditions.append(GameSession.operator_id == int(operator_id))
     text = (keyword or "").strip()
     if text:
         like = f"%{text}%"

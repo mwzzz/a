@@ -37,7 +37,7 @@
               <el-icon class="is-loading"><Loading /></el-icon>
               识别中，约 3–8 秒
             </div>
-            <div v-else-if="result" class="drop-hint">识别完成，确认后填入</div>
+            <div v-else-if="result" class="drop-hint">识别完成，匹配玩家已填入</div>
             <div v-else-if="errorText" class="drop-hint error-text">{{ errorText }}</div>
             <div v-else class="drop-hint">选择另一张图可重新识别</div>
           </div>
@@ -61,7 +61,7 @@
         <div v-for="item in rows" :key="item.raw_name" class="row" :class="item.status">
           <el-checkbox
             v-model="item.selected"
-            :disabled="item.status === 'ambiguous' && !item.chooser"
+            :disabled="(item.status === 'ambiguous' && !item.chooser) || isBlocked(activePlayer(item))"
           />
           <div class="raw">
             <span class="raw-name">{{ item.raw_name }}</span>
@@ -70,6 +70,22 @@
 
           <div v-if="item.status === 'matched' && item.matched_player" class="target">
             {{ item.matched_player.game_id }}
+            <span v-if="item.matched_player.account" class="rank">
+              · {{ item.matched_player.account }}
+            </span>
+            <span
+              class="balance"
+              :class="{ negative: item.matched_player.balance_cents < 0 }"
+            >
+              押金 ¥{{ formatBalance(
+                item.matched_player.balance_cents,
+                item.matched_player.bonus_cents,
+                item.matched_player.deposit_cents,
+              ) }}
+            </span>
+            <em v-if="item.matched_player.is_blacklisted" class="tag danger">黑名单</em>
+            <em v-else-if="isTeaFree(item.matched_player.game_id)" class="tag">免茶水</em>
+            <em v-if="isLowDeposit(item.matched_player)" class="tag warn">押金不足</em>
           </div>
           <el-select
             v-else-if="item.status === 'ambiguous'"
@@ -77,13 +93,14 @@
             size="small"
             placeholder="选择匹配玩家"
             class="candidate"
-            @change="item.selected = true"
+            @change="onCandidateChange(item)"
           >
             <el-option
               v-for="candidate in item.candidates"
               :key="candidate.player.id"
-              :label="`${candidate.player.game_id}（${Math.round(candidate.score * 100)}%）`"
+              :label="candidateLabel(candidate)"
               :value="candidate.player.id"
+              :disabled="isBlocked(candidate.player)"
             />
           </el-select>
           <div v-else class="unmatched">
@@ -121,11 +138,18 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import { aiApi, playerApi } from '@/api'
-import type { AiPlayerItem, AiRecognizePayload } from '@/api/types'
+import type { AiCandidate, AiPlayerItem, AiPlayerRef, AiRecognizePayload } from '@/api/types'
+import { formatBalance } from '@/utils/money'
+import { nameKey } from '@/utils/names'
 
-const props = defineProps<{
-  active: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    active: boolean
+    teaFreeKeys?: string[]
+    teaFeeCents?: number
+  }>(),
+  { teaFreeKeys: () => [], teaFeeCents: 0 },
+)
 
 const emit = defineEmits<{
   (event: 'apply', ids: number[]): void
@@ -151,15 +175,55 @@ let controller: AbortController | null = null
 
 const MAX_BYTES = 5 * 1024 * 1024
 const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+const UPSCALE_MAX_SIDE = 1400
+const UPSCALE_FACTOR = 2
+
+function isTeaFree(gameId: string): boolean {
+  return props.teaFreeKeys.includes(nameKey(gameId))
+}
+
+function isBlocked(player: AiPlayerRef | null | undefined): boolean {
+  return Boolean(player && (player.is_blacklisted || isTeaFree(player.game_id)))
+}
+
+function activePlayer(item: RowState): AiPlayerRef | null {
+  if (item.status === 'matched') return item.matched_player
+  if (item.status === 'ambiguous' && item.chooser) {
+    return item.candidates.find((row) => row.player.id === item.chooser)?.player || null
+  }
+  return null
+}
+
+function isLowDeposit(player: AiPlayerRef | null | undefined): boolean {
+  return Boolean(
+    player && props.teaFeeCents > 0 && player.balance_cents < props.teaFeeCents * 11,
+  )
+}
+
+function candidateLabel(candidate: AiCandidate): string {
+  const tags = []
+  if (candidate.player.is_blacklisted) tags.push('黑名单')
+  else if (isTeaFree(candidate.player.game_id)) tags.push('免茶水')
+  if (isLowDeposit(candidate.player)) tags.push('押金不足')
+  const suffix = tags.length ? ` · ${tags.join('/')}` : ''
+  const rank = candidate.player.account ? ` · ${candidate.player.account}` : ''
+  const balance = formatBalance(
+    candidate.player.balance_cents,
+    candidate.player.bonus_cents,
+    candidate.player.deposit_cents,
+  )
+  return `${candidate.player.game_id}${rank}（${Math.round(candidate.score * 100)}%）· 押金 ¥${balance}${suffix}`
+}
+
+function onCandidateChange(item: RowState) {
+  const player = activePlayer(item)
+  item.selected = Boolean(player && !isBlocked(player))
+}
 
 const selectedIds = computed(() => {
   const ids = rows.value
-    .filter((item) => item.selected)
-    .map((item) => {
-      if (item.status === 'matched') return item.matched_player?.id
-      if (item.status === 'ambiguous') return item.chooser
-      return null
-    })
+    .filter((item) => item.selected && !isBlocked(activePlayer(item)))
+    .map((item) => activePlayer(item)?.id)
     .filter((id): id is number => Boolean(id))
   return [...new Set(ids)].slice(0, 10)
 })
@@ -188,6 +252,16 @@ watch(
       reset()
     }
   },
+)
+
+watch(
+  () => props.teaFreeKeys,
+  () => {
+    for (const item of rows.value) {
+      if (item.selected && isBlocked(activePlayer(item))) item.selected = false
+    }
+  },
+  { deep: true },
 )
 
 function releasePreview() {
@@ -236,6 +310,35 @@ function validate(file: File): boolean {
   return true
 }
 
+async function upscaleForAi(file: File): Promise<File> {
+  if (typeof createImageBitmap !== 'function') return file
+  let bitmap: ImageBitmap | null = null
+  try {
+    bitmap = await createImageBitmap(file)
+    if (Math.max(bitmap.width, bitmap.height) > UPSCALE_MAX_SIDE) return file
+    const canvas = document.createElement('canvas')
+    canvas.width = bitmap.width * UPSCALE_FACTOR
+    canvas.height = bitmap.height * UPSCALE_FACTOR
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return file
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', 0.92),
+    )
+    if (!blob || blob.size > MAX_BYTES) return file
+    const name = file.name.replace(/\.[^.]+$/, '') + '-2x.jpg'
+    return new File([blob], name, { type: 'image/jpeg' })
+  } catch {
+    return file
+  } finally {
+    bitmap?.close()
+  }
+}
+
 async function recognize(file: File) {
   if (!validate(file)) return
   currentFile = file
@@ -247,15 +350,20 @@ async function recognize(file: File) {
   rows.value = []
   recognizing.value = true
   controller = new AbortController()
+  const signal = controller.signal
 
   try {
-    const payload = await aiApi.recognize(file, controller.signal)
+    // 计分板小字直接送模型容易把「调料」读成「词」，小图先放大 2 倍。
+    const prepared = await upscaleForAi(file)
+    if (signal.aborted) return
+    const payload = await aiApi.recognize(prepared, signal)
     result.value = payload
     rows.value = payload.items.map((item) => ({
       ...item,
-      selected: item.status === 'matched',
+      selected: item.status === 'matched' && !isBlocked(item.matched_player),
       chooser: null,
     }))
+    if (selectedIds.value.length) apply()
   } catch (error: any) {
     if (error?.code === 'ERR_CANCELED') return
     errorText.value = error?.response?.data?.detail || '识别失败，请手动选人'
@@ -310,9 +418,12 @@ async function createPlayer(item: RowState) {
       game_id: created.game_id,
       account: created.account || '',
       deposit_cents: created.deposit_cents,
+      bonus_cents: created.bonus_cents,
+      balance_cents: created.balance_cents,
+      is_blacklisted: created.is_blacklisted,
     }
     item.status = 'matched'
-    item.selected = true
+    item.selected = !isBlocked(item.matched_player)
     ElMessage.success(`已新建玩家 ${created.game_id}`)
   } finally {
     creatingName.value = null
@@ -495,9 +606,47 @@ function apply() {
 
 .target {
   color: var(--el-color-success);
-  overflow: hidden;
-  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.balance {
+  color: var(--el-text-color-secondary);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.balance.negative {
+  color: var(--el-color-danger);
+  font-weight: 600;
+}
+
+.rank {
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+}
+
+.tag {
+  font-style: normal;
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--app-border-strong);
+  color: var(--el-text-color-secondary);
   white-space: nowrap;
+}
+
+.tag.danger {
+  color: var(--el-color-danger);
+  border-color: var(--el-color-danger);
+}
+
+.tag.warn {
+  color: var(--el-color-warning);
+  border-color: var(--el-color-warning);
 }
 
 .candidate {

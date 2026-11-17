@@ -31,14 +31,20 @@ def player_row(
     high_cents: int,
     last_active_at: str | None = None,
 ) -> dict:
+    deposit_cents = int(player.deposit_cents)
+    bonus_cents = int(player.bonus_cents)
+    balance_cents = deposit_cents + bonus_cents
     return {
         "id": player.id,
         "game_id": player.game_id,
         "nickname": player.nickname,
         "account": player.account,
         "remark": player.remark,
-        "deposit_cents": int(player.deposit_cents),
-        "deposit_level": deposit_level(int(player.deposit_cents), low_cents, high_cents),
+        "is_blacklisted": bool(player.is_blacklisted),
+        "deposit_cents": deposit_cents,
+        "bonus_cents": bonus_cents,
+        "balance_cents": balance_cents,
+        "deposit_level": deposit_level(balance_cents, low_cents, high_cents),
         "games_played": int(player.games_played),
         "last_active_at": last_active_at or player.updated_at,
         "creator": user_brief(player.creator),
@@ -47,11 +53,16 @@ def player_row(
 
 
 def player_option(player: Player) -> dict:
+    deposit_cents = int(player.deposit_cents)
+    bonus_cents = int(player.bonus_cents)
     return {
         "id": player.id,
         "game_id": player.game_id,
         "account": player.account,
-        "deposit_cents": int(player.deposit_cents),
+        "is_blacklisted": bool(player.is_blacklisted),
+        "deposit_cents": deposit_cents,
+        "bonus_cents": bonus_cents,
+        "balance_cents": deposit_cents + bonus_cents,
     }
 
 
@@ -75,6 +86,9 @@ def entry_row(
         "signed_amount_cents": signed_cents(entry.reason, int(entry.amount_cents)),
         "balance_before_cents": int(entry.balance_before_cents),
         "balance_after_cents": int(entry.balance_after_cents),
+        "bonus_amount_cents": int(entry.bonus_amount_cents),
+        "deposit_after_cents": int(entry.deposit_after_cents),
+        "bonus_after_cents": int(entry.bonus_after_cents),
         "note": entry.note,
         "player": {"id": entry.player_id, "game_id": game_id},
         "counterparty": (

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, aliased
 
 from app.errors import AppError, NotFoundError
 from app.models import Batch, GameSession, LedgerEntry, Player, User
-from app.serializers import entry_payload, entry_row, session_row
+from app.serializers import entry_payload, entry_row, session_row, user_brief
 from app.services import options
 from app.services.batches import (
     compute_summary,
@@ -47,6 +47,7 @@ def list_deposit_records(
     player_id: int | None = None,
     batch_id: int | None = None,
     session_id: int | None = None,
+    operator_id: int | None = None,
     reason: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
@@ -66,6 +67,8 @@ def list_deposit_records(
     conditions = [LedgerEntry.merchant_id == merchant_id]
     if player_id is not None:
         conditions.append(LedgerEntry.player_id == player_id)
+    if operator_id is not None:
+        conditions.append(LedgerEntry.operator_id == int(operator_id))
     if batch_id is not None:
         conditions.append(LedgerEntry.batch_id == batch_id)
     if session_id is not None:
@@ -127,6 +130,7 @@ def list_session_records(
     keyword: str = "",
     date_from: str | None = None,
     date_to: str | None = None,
+    operator_id: int | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> dict:
@@ -136,9 +140,83 @@ def list_session_records(
         keyword=keyword,
         date_from=date_from,
         date_to=date_to,
+        operator_id=operator_id,
         page=page,
         page_size=page_size,
     )
+
+
+def list_operator_options(session: Session, merchant_id: int) -> list[dict]:
+    """流水筛选用的操作人：含已停用账号，开发者账号不出现在门店里。"""
+    users = session.scalars(
+        select(User)
+        .where(
+            User.merchant_id == merchant_id,
+            User.is_superadmin.is_(False),
+        )
+        .order_by(User.id)
+    )
+    return [
+        {
+            "id": user.id,
+            "username": user.username,
+            "display_name": user.display_name or user.username,
+            "role": user.role,
+            "is_active": bool(user.is_active),
+        }
+        for user in users
+    ]
+
+
+def operator_cash_summary(
+    session: Session,
+    merchant_id: int,
+    *,
+    operator_id: int,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict:
+    """按操作人统计加押金、退押金及差额；划转不计入。"""
+    conditions = [
+        LedgerEntry.merchant_id == merchant_id,
+        LedgerEntry.operator_id == int(operator_id),
+        LedgerEntry.reason.in_(("add_deposit", "refund")),
+    ]
+    conditions.extend(_date_conditions(LedgerEntry.created_at, date_from, date_to))
+
+    rows = session.execute(
+        select(
+            LedgerEntry.reason,
+            func.coalesce(func.sum(LedgerEntry.amount_cents), 0),
+            func.count(),
+        )
+        .where(*conditions)
+        .group_by(LedgerEntry.reason)
+    ).all()
+
+    add_cents = 0
+    refund_cents = 0
+    entry_count = 0
+    for reason, amount, count in rows:
+        if reason == "add_deposit":
+            add_cents = int(amount)
+        else:
+            refund_cents = int(amount)
+        entry_count += int(count)
+
+    operator = session.scalar(
+        select(User).where(
+            User.id == int(operator_id),
+            User.merchant_id == merchant_id,
+        )
+    )
+    return {
+        "operator": user_brief(operator),
+        "add_deposit_cents": add_cents,
+        "refund_cents": refund_cents,
+        "cash_diff_cents": add_cents - refund_cents,
+        "entry_count": entry_count,
+    }
 
 
 def player_ledger(

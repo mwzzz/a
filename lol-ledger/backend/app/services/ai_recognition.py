@@ -1,4 +1,4 @@
-"""截图识别玩家：调用 DeepSeek 视觉模型，只返回候选，不写业务数据。"""
+"""截图识别玩家：调用视觉模型，只返回候选，不写业务数据。"""
 
 from __future__ import annotations
 
@@ -168,39 +168,58 @@ def _call_model(image_bytes: bytes, mime: str) -> list[dict]:
             },
         ],
         "temperature": 0,
-        "max_tokens": 1200,
+        "max_tokens": 2500,
         "stream": False,
         "response_format": {"type": "json_object"},
     }
+    if settings.ai_enable_thinking is not None:
+        # 千问等混合思考模型关闭后能显著降低延迟；None 表示不传该参数。
+        payload["enable_thinking"] = settings.ai_enable_thinking
     headers = {
         "Authorization": f"Bearer {settings.ai_api_key.strip()}",
         "Content-Type": "application/json",
     }
 
-    try:
-        with httpx.Client(timeout=settings.ai_timeout_seconds) as client:
-            response = client.post(url, json=payload, headers=headers)
-    except httpx.TimeoutException as exc:
-        raise AiTimeoutError("识别超时，请换一张图或手动选人") from exc
-    except httpx.HTTPError as exc:
-        logger.warning("AI 请求失败：%s", type(exc).__name__)
-        raise AiUnavailableError("AI 服务连接失败，请手动选人") from exc
+    for attempt in range(2):
+        try:
+            # trust_env=False：部分环境 NO_PROXY 带 "[::1]"，httpx 0.28 解析时会直接抛 InvalidURL。
+            with httpx.Client(
+                timeout=settings.ai_timeout_seconds, trust_env=False
+            ) as client:
+                response = client.post(url, json=payload, headers=headers)
+        except httpx.TimeoutException as exc:
+            raise AiTimeoutError("识别超时，请换一张图或手动选人") from exc
+        except httpx.HTTPError as exc:
+            logger.warning("AI 请求失败：%s", type(exc).__name__)
+            raise AiUnavailableError("AI 服务连接失败，请手动选人") from exc
 
-    if response.status_code in (401, 403):
-        logger.error("AI 鉴权失败，请检查 AI_API_KEY")
-        raise AiUnavailableError("AI 服务配置有误，请手动选人")
-    if response.status_code >= 400:
-        logger.warning("AI 服务返回 %s", response.status_code)
-        raise AiUnavailableError("AI 服务暂时不可用，请手动选人")
+        if response.status_code in (401, 403):
+            logger.error("AI 鉴权失败，请检查 AI_API_KEY")
+            raise AiUnavailableError("AI 服务配置有误，请手动选人")
+        if response.status_code >= 400:
+            logger.warning("AI 服务返回 %s", response.status_code)
+            raise AiUnavailableError("AI 服务暂时不可用，请手动选人")
 
-    try:
-        body = response.json()
-        content = body["choices"][0]["message"]["content"]
-    except (ValueError, KeyError, IndexError, TypeError) as exc:
-        raise AiResponseError("AI 返回格式不正确，请手动选人") from exc
-    if not isinstance(content, str):
-        raise AiResponseError("AI 返回格式不正确，请手动选人")
-    return _parse_model_content(content)
+        try:
+            body = response.json()
+            content = body["choices"][0]["message"]["content"]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise AiResponseError("AI 返回格式不正确，请手动选人") from exc
+        if not isinstance(content, str):
+            raise AiResponseError("AI 返回格式不正确，请手动选人")
+
+        try:
+            return _parse_model_content(content)
+        except AiResponseError:
+            # 视觉模型偶发把 token 花在推理上导致 JSON 截断，重试一次通常就正常。
+            if attempt == 0:
+                logger.warning(
+                    "AI 返回内容无法解析，重试一次（长度 %s）", len(content)
+                )
+                continue
+            raise
+
+    raise AiResponseError("AI 返回格式不正确，请手动选人")
 
 
 def recognize_players(

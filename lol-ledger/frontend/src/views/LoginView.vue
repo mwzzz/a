@@ -5,7 +5,7 @@
         <span class="brand-mark">L</span>
         <div>
           <div class="brand-title">LOL 记录管理</div>
-          <div class="brand-sub">押金 · 场次 · 班次对账</div>
+          <div class="brand-sub">押金 · 场次 · 经营对账</div>
         </div>
       </div>
 

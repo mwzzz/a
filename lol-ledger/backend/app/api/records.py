@@ -6,7 +6,13 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.deps import Actor, get_current_user, get_read_db
-from app.services.records import list_deposit_records, list_session_records, transfer_group
+from app.services.records import (
+    list_deposit_records,
+    list_operator_options,
+    list_session_records,
+    operator_cash_summary,
+    transfer_group,
+)
 
 router = APIRouter(prefix="/records", tags=["记录"])
 
@@ -17,6 +23,7 @@ def deposit_records(
     player_id: int | None = None,
     batch_id: int | None = None,
     session_id: int | None = None,
+    operator_id: int | None = None,
     reason: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
@@ -33,6 +40,7 @@ def deposit_records(
         player_id=player_id,
         batch_id=batch_id,
         session_id=session_id,
+        operator_id=operator_id,
         reason=reason,
         date_from=date_from,
         date_to=date_to,
@@ -47,6 +55,7 @@ def session_records(
     keyword: str = "",
     date_from: str | None = None,
     date_to: str | None = None,
+    operator_id: int | None = None,
     page: int = 1,
     page_size: int = 20,
     actor: Actor = Depends(get_current_user),
@@ -58,8 +67,34 @@ def session_records(
         keyword=keyword,
         date_from=date_from,
         date_to=date_to,
+        operator_id=operator_id,
         page=page,
         page_size=page_size,
+    )
+
+
+@router.get("/operators")
+def operator_options(
+    actor: Actor = Depends(get_current_user),
+    session: Session = Depends(get_read_db),
+) -> list[dict]:
+    return list_operator_options(session, actor.merchant_id)
+
+
+@router.get("/operator-summary")
+def operator_summary(
+    operator_id: int,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    actor: Actor = Depends(get_current_user),
+    session: Session = Depends(get_read_db),
+) -> dict:
+    return operator_cash_summary(
+        session,
+        actor.merchant_id,
+        operator_id=operator_id,
+        date_from=date_from,
+        date_to=date_to,
     )
 
 

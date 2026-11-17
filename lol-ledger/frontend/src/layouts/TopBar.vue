@@ -27,7 +27,7 @@
       v-if="!auth.isSuperadmin"
       v-model="keyword"
       class="search desktop-only"
-      placeholder="搜索玩家或场次"
+      placeholder="搜索玩家"
       clearable
       @keyup.enter="doSearch"
     >
@@ -60,6 +60,12 @@
       </template>
     </el-dropdown>
 
+    <el-tooltip content="更新日志" placement="bottom">
+      <el-button text circle class="log-btn" aria-label="更新日志" @click="logVisible = true">
+        <el-icon><Memo /></el-icon>
+      </el-button>
+    </el-tooltip>
+
     <el-tooltip :content="app.theme === 'dark' ? '切换到亮色' : '切换到暗色'" placement="bottom">
       <el-button text circle class="icon-btn" @click="app.toggleTheme()">
         <el-icon>
@@ -69,6 +75,23 @@
       </el-button>
     </el-tooltip>
   </header>
+
+  <el-drawer v-model="logVisible" title="更新日志" size="min(440px, 92vw)">
+    <div class="changelog">
+      <section v-for="entry in CHANGELOG" :key="entry.date" class="log-entry">
+        <div class="log-head">
+          <span class="log-date">{{ entry.date }}</span>
+          <span v-if="entry.version" class="log-version">{{ entry.version }}</span>
+        </div>
+        <div v-for="group in entry.groups" :key="group.title" class="log-group">
+          <div class="log-group-title">{{ group.title }}</div>
+          <ul class="log-list">
+            <li v-for="item in group.items" :key="item">{{ item }}</li>
+          </ul>
+        </div>
+      </section>
+    </div>
+  </el-drawer>
 
   <el-dialog v-model="pwdVisible" title="修改密码" width="420px" :close-on-click-modal="false">
     <el-form label-width="86px">
@@ -96,6 +119,7 @@ import {
   Calendar,
   DataBoard,
   MagicStick,
+  Memo,
   Moon,
   Search,
   Setting,
@@ -109,6 +133,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { authApi } from '@/api'
+import { CHANGELOG } from '@/data/changelog'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
@@ -132,11 +157,13 @@ const navs = computed(() =>
 
 const keyword = ref('')
 const pwdVisible = ref(false)
+const logVisible = ref(false)
 const saving = ref(false)
 const pwd = reactive({ old: '', next: '', confirm: '' })
 
 function doSearch() {
-  router.push({ name: 'reports', query: keyword.value ? { tab: 'records', keyword: keyword.value } : { tab: 'records' } })
+  const text = keyword.value.trim()
+  router.push({ name: 'players', query: text ? { keyword: text } : {} })
 }
 
 function openSession() {
@@ -335,6 +362,58 @@ watch(
   font-size: 12px;
   color: var(--app-text-muted);
   line-height: 1.6;
+}
+
+.changelog {
+  padding-bottom: 8px;
+}
+
+.log-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.log-date {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.log-version {
+  padding: 1px 8px;
+  border: 1px solid rgba(76, 141, 255, 0.35);
+  border-radius: 999px;
+  background: rgba(76, 141, 255, 0.1);
+  font-size: 11px;
+  color: var(--el-color-primary);
+}
+
+.log-group {
+  margin-bottom: 14px;
+}
+
+.log-group-title {
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.log-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--el-text-color-regular);
+  font-size: 12.5px;
+  line-height: 1.85;
+}
+
+.log-list li {
+  margin-bottom: 2px;
+}
+
+.log-list li::marker {
+  color: var(--el-color-primary);
 }
 
 @media (max-width: 768px) {

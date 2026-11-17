@@ -89,7 +89,7 @@ export interface MerchantPurgeCounts {
 export interface MerchantPurgePreview {
   merchant: { id: number; name: string; status: string }
   counts: MerchantPurgeCounts
-  custody: CustodyInfo
+  deposit_total_cents: number
   open_batch: { id: number; opened_at: string } | null
   keep: { accounts: boolean; settings: boolean; merchant: boolean }
   warnings: string[]
@@ -108,7 +108,10 @@ export interface PlayerRow {
   nickname: string
   account: string
   remark: string
+  is_blacklisted: boolean
   deposit_cents: number
+  bonus_cents: number
+  balance_cents: number
   deposit_level: 'low' | 'warn' | 'safe'
   games_played: number
   last_active_at: string
@@ -116,6 +119,8 @@ export interface PlayerRow {
   created_at: string
   total_in_cents?: number
   total_out_cents?: number
+  bonus_in_cents?: number
+  bonus_used_cents?: number
   entry_count?: number
 }
 
@@ -123,7 +128,10 @@ export interface PlayerOption {
   id: number
   game_id: string
   account: string
+  is_blacklisted: boolean
   deposit_cents: number
+  bonus_cents: number
+  balance_cents: number
 }
 
 export interface PlayerImportResult {
@@ -141,6 +149,9 @@ export interface AiPlayerRef {
   game_id: string
   account: string
   deposit_cents: number
+  bonus_cents: number
+  balance_cents: number
+  is_blacklisted: boolean
 }
 
 export interface AiCandidate {
@@ -220,6 +231,9 @@ export interface LedgerEntryRow {
   signed_amount_cents: number
   balance_before_cents: number
   balance_after_cents: number
+  bonus_amount_cents: number
+  deposit_after_cents: number
+  bonus_after_cents: number
   note: string
   player: { id: number; game_id: string }
   counterparty: { id: number; game_id: string } | null
@@ -250,6 +264,7 @@ export interface SessionRow {
   creator: UserBrief | null
   created_at: string
   players: SessionPlayerRow[]
+  tea_free_removed?: string[]
 }
 
 export interface BatchSummary {
@@ -362,9 +377,26 @@ export interface OperatorSummary {
   totals: SummaryTotals
 }
 
+export interface OperatorOption {
+  id: number
+  username: string
+  display_name: string
+  role: 'admin' | 'staff'
+  is_active: boolean
+}
+
+export interface OperatorCashSummary {
+  operator: UserBrief | null
+  add_deposit_cents: number
+  refund_cents: number
+  cash_diff_cents: number
+  entry_count: number
+}
+
 export interface OverviewPayload {
   date: string
   total_deposit_cents: number
+  total_bonus_cents: number
   player_count: number
   low_deposit_count: number
   deposit_low_cents: number
@@ -373,6 +405,7 @@ export interface OverviewPayload {
   dividend_rate_percent: number
   dividend_fixed_cents: number
   today: SummaryTotals
+  today_operators: OperatorSummaryRow[]
   recent_records: LedgerEntryRow[]
 }
 
@@ -396,6 +429,11 @@ export interface PreviewPayload {
     before_cents: number
     deduct_cents: number
     after_cents: number
+    deposit_before_cents: number
+    deposit_after_cents: number
+    bonus_before_cents: number
+    bonus_after_cents: number
+    bonus_deduct_cents: number
     level: string
     negative: boolean
   }[]
@@ -404,19 +442,34 @@ export interface PreviewPayload {
   tea_total_cents: number
   negative_count: number
   negative_players: string[]
+  tea_free_removed: string[]
+}
+
+export interface RechargeCampaign {
+  id: number
+  threshold_cents: number
+  bonus_cents: number
+  created_at: string
+  updated_at: string
 }
 
 export interface ReconcilePayload {
   ok: boolean
   checked: number
   total_deposit_cents: number
+  total_bonus_cents: number
   total_ledger_cents: number
+  total_cash_ledger_cents: number
+  total_bonus_ledger_cents: number
   problems: {
     player_id: number
     game_id: string
     stored_cents: number
     ledger_sum_cents: number
     last_balance_cents: number
+    stored_bonus_cents: number
+    ledger_bonus_sum_cents: number
+    last_bonus_cents: number
   }[]
 }
 

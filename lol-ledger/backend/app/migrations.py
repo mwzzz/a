@@ -11,6 +11,9 @@ batches 增加 dividend_mode / dividend_fixed_cents 快照列。
 v7 引入排队登记（queue_entries），v8 取消开班/交班（场次直接统计）。
 v9 引入「查战绩」多用户版：zj_users / zj_batches / zj_batch_players /
 zj_queries / zj_grants。只新增表，不动任何既有表。
+v10 引入「常用名单」小工具；v11 给玩家增加黑名单标记；
+v12 引入玩家赠金与充值活动：players.bonus_cents、ledger 现金/赠金拆分、
+recharge_campaigns 档位表。
 
 迁移策略：
 - 全新库：按 v6 直接建表，写入默认商家、平台商家和默认配置。
@@ -36,7 +39,7 @@ from app.timeutil import now_text
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 12
 DEFAULT_MERCHANT_NAME = "默认商家"
 PLATFORM_MERCHANT_NAME = "平台管理"
 DEFAULT_DIVIDEND_RATE = 50
@@ -285,6 +288,65 @@ TOOL_STATEMENTS: tuple[str, ...] = (
     """,
 )
 
+# 玩家赠金与充值活动（v12）
+LEDGER_TABLE_STATEMENT = """
+CREATE TABLE IF NOT EXISTS ledger (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    merchant_id            INTEGER NOT NULL REFERENCES merchants(id),
+    player_id              INTEGER NOT NULL REFERENCES players(id),
+    batch_id               INTEGER REFERENCES batches(id),
+    session_id             INTEGER REFERENCES sessions(id),
+    reason                 TEXT    NOT NULL CHECK (reason IN (
+                               'normal_deduct', 'manual_deduct', 'refund',
+                               'add_deposit', 'transfer_out', 'transfer_in',
+                               'add_bonus')),
+    amount_cents           INTEGER NOT NULL,
+    balance_before_cents   INTEGER NOT NULL,
+    balance_after_cents    INTEGER NOT NULL,
+    bonus_amount_cents     INTEGER NOT NULL DEFAULT 0,
+    deposit_after_cents    INTEGER NOT NULL,
+    bonus_after_cents      INTEGER NOT NULL DEFAULT 0,
+    counterparty_player_id INTEGER REFERENCES players(id),
+    transfer_group_id      TEXT,
+    operator_id            INTEGER NOT NULL REFERENCES users(id),
+    note                   TEXT    NOT NULL DEFAULT '',
+    created_at             TEXT    NOT NULL,
+
+    CHECK (balance_after_cents = balance_before_cents
+           + CASE WHEN reason IN ('add_deposit', 'transfer_in', 'add_bonus')
+                  THEN amount_cents ELSE -amount_cents END),
+    CHECK (balance_after_cents = deposit_after_cents + bonus_after_cents),
+    CHECK (bonus_after_cents >= 0),
+    CHECK (bonus_amount_cents >= 0 AND bonus_amount_cents <= amount_cents),
+    CHECK (bonus_amount_cents = 0 OR reason IN ('normal_deduct', 'add_bonus')),
+    CHECK (reason != 'add_bonus' OR bonus_amount_cents = amount_cents),
+    CHECK ((reason IN ('normal_deduct', 'manual_deduct') AND amount_cents >= 0)
+        OR (reason NOT IN ('normal_deduct', 'manual_deduct') AND amount_cents > 0)),
+    CHECK ((reason IN ('transfer_out', 'transfer_in')
+            AND counterparty_player_id IS NOT NULL
+            AND transfer_group_id IS NOT NULL)
+        OR reason NOT IN ('transfer_out', 'transfer_in'))
+)
+"""
+
+RECHARGE_CAMPAIGN_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS recharge_campaigns (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        merchant_id     INTEGER NOT NULL REFERENCES merchants(id),
+        threshold_cents INTEGER NOT NULL CHECK (threshold_cents > 0),
+        bonus_cents     INTEGER NOT NULL CHECK (bonus_cents > 0),
+        created_at      TEXT    NOT NULL,
+        updated_at      TEXT    NOT NULL,
+        UNIQUE (merchant_id, threshold_cents)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_recharge_campaigns_merchant
+        ON recharge_campaigns(merchant_id, threshold_cents)
+    """,
+)
+
 TABLE_STATEMENTS: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS merchants (
@@ -323,7 +385,9 @@ TABLE_STATEMENTS: tuple[str, ...] = (
         nickname      TEXT    NOT NULL DEFAULT '',
         account       TEXT    NOT NULL DEFAULT '',
         remark        TEXT    NOT NULL DEFAULT '',
+        is_blacklisted INTEGER NOT NULL DEFAULT 0 CHECK (is_blacklisted IN (0, 1)),
         deposit_cents INTEGER NOT NULL DEFAULT 0,
+        bonus_cents   INTEGER NOT NULL DEFAULT 0 CHECK (bonus_cents >= 0),
         games_played  INTEGER NOT NULL DEFAULT 0 CHECK (games_played >= 0),
         creator_id    INTEGER NOT NULL REFERENCES users(id),
         created_at    TEXT    NOT NULL,
@@ -373,36 +437,7 @@ TABLE_STATEMENTS: tuple[str, ...] = (
         created_at    TEXT    NOT NULL
     )
     """,
-    """
-    CREATE TABLE IF NOT EXISTS ledger (
-        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
-        merchant_id            INTEGER NOT NULL REFERENCES merchants(id),
-        player_id              INTEGER NOT NULL REFERENCES players(id),
-        batch_id               INTEGER REFERENCES batches(id),
-        session_id             INTEGER REFERENCES sessions(id),
-        reason                 TEXT    NOT NULL CHECK (reason IN (
-                                   'normal_deduct', 'manual_deduct', 'refund',
-                                   'add_deposit', 'transfer_out', 'transfer_in')),
-        amount_cents           INTEGER NOT NULL,
-        balance_before_cents   INTEGER NOT NULL,
-        balance_after_cents    INTEGER NOT NULL,
-        counterparty_player_id INTEGER REFERENCES players(id),
-        transfer_group_id      TEXT,
-        operator_id            INTEGER NOT NULL REFERENCES users(id),
-        note                   TEXT    NOT NULL DEFAULT '',
-        created_at             TEXT    NOT NULL,
-
-        CHECK (balance_after_cents = balance_before_cents
-               + CASE WHEN reason IN ('add_deposit', 'transfer_in') THEN amount_cents
-                      ELSE -amount_cents END),
-        CHECK ((reason IN ('normal_deduct', 'manual_deduct') AND amount_cents >= 0)
-            OR (reason NOT IN ('normal_deduct', 'manual_deduct') AND amount_cents > 0)),
-        CHECK ((reason IN ('transfer_out', 'transfer_in')
-                AND counterparty_player_id IS NOT NULL
-                AND transfer_group_id IS NOT NULL)
-            OR reason NOT IN ('transfer_out', 'transfer_in'))
-    )
-    """,
+    LEDGER_TABLE_STATEMENT,
     """
     CREATE TABLE IF NOT EXISTS session_players (
         id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -443,6 +478,7 @@ TABLE_STATEMENTS: tuple[str, ...] = (
     DIVIDEND_SETTLEMENT_BATCH_TABLE,
     *QUEUE_STATEMENTS,
     *TOOL_STATEMENTS,
+    *RECHARGE_CAMPAIGN_STATEMENTS,
 )
 
 INDEX_STATEMENTS: tuple[str, ...] = (
@@ -552,11 +588,13 @@ COPY_STATEMENTS: tuple[tuple[str, str], ...] = (
         """
         INSERT INTO ledger (id, merchant_id, player_id, batch_id, session_id, reason,
                             amount_cents, balance_before_cents, balance_after_cents,
+                            bonus_amount_cents, deposit_after_cents, bonus_after_cents,
                             counterparty_player_id, transfer_group_id, operator_id,
                             note, created_at)
         SELECT id, :mid, player_id, NULL, NULL, reason, amount_cents,
-               balance_before_cents, balance_after_cents, counterparty_player_id,
-               transfer_group_id, operator_id, note, created_at
+               balance_before_cents, balance_after_cents,
+               0, balance_after_cents, 0,
+               counterparty_player_id, transfer_group_id, operator_id, note, created_at
         FROM ledger__old
         """,
     ),
@@ -1171,6 +1209,91 @@ def _upgrade_v9_to_v10(conn: sqlite3.Connection, db_path: Path) -> None:
         conn.execute("PRAGMA foreign_keys=ON")
 
 
+def _upgrade_v10_to_v11(conn: sqlite3.Connection, db_path: Path) -> None:
+    """v10 → v11：玩家增加黑名单标记。只加列，不动历史数据。"""
+    backup = _backup(conn, db_path, "pre-v11")
+    logger.info("迁移前已备份：%s", backup)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "ALTER TABLE players ADD COLUMN is_blacklisted INTEGER NOT NULL DEFAULT 0"
+            " CHECK (is_blacklisted IN (0, 1))"
+        )
+        conn.execute("PRAGMA user_version = 11")
+        _assert_foreign_keys(conn)
+        conn.execute("COMMIT")
+        logger.info("v10 → v11 迁移完成：玩家黑名单标记就绪")
+    except Exception:
+        _rollback(conn)
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _upgrade_v11_to_v12(conn: sqlite3.Connection, db_path: Path) -> None:
+    """v11 → v12：玩家赠金、流水现金/赠金拆分与充值活动。
+
+    ledger 需要扩 reason 枚举和新增列，SQLite 不支持直接改 CHECK，因此按原顺序
+    重建表并复制全部历史行；旧行的赠金部分统一回填为 0。
+    """
+    backup = _backup(conn, db_path, "pre-v12")
+    logger.info("迁移前已备份：%s", backup)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not _column_exists(conn, "players", "bonus_cents"):
+            conn.execute(
+                "ALTER TABLE players ADD COLUMN bonus_cents INTEGER NOT NULL DEFAULT 0"
+                " CHECK (bonus_cents >= 0)"
+            )
+
+        if not _column_exists(conn, "ledger", "bonus_amount_cents"):
+            new_table = LEDGER_TABLE_STATEMENT.replace(
+                "CREATE TABLE IF NOT EXISTS ledger",
+                "CREATE TABLE ledger__v12",
+                1,
+            )
+            conn.execute(new_table)
+            conn.execute(
+                """
+                INSERT INTO ledger__v12 (
+                    id, merchant_id, player_id, batch_id, session_id, reason,
+                    amount_cents, balance_before_cents, balance_after_cents,
+                    bonus_amount_cents, deposit_after_cents, bonus_after_cents,
+                    counterparty_player_id, transfer_group_id, operator_id,
+                    note, created_at
+                )
+                SELECT id, merchant_id, player_id, batch_id, session_id, reason,
+                       amount_cents, balance_before_cents, balance_after_cents,
+                       0, balance_after_cents, 0,
+                       counterparty_player_id, transfer_group_id, operator_id,
+                       note, created_at
+                FROM ledger
+                """
+            )
+            conn.execute("DROP TABLE ledger")
+            conn.execute("ALTER TABLE ledger__v12 RENAME TO ledger")
+            for statement in INDEX_STATEMENTS:
+                if " ON ledger" in statement:
+                    conn.execute(statement)
+
+        for statement in RECHARGE_CAMPAIGN_STATEMENTS:
+            conn.execute(statement)
+
+        conn.execute("PRAGMA user_version = 12")
+        _assert_foreign_keys(conn)
+        conn.execute("COMMIT")
+        logger.info("v11 → v12 迁移完成：玩家赠金与充值活动就绪")
+    except Exception:
+        _rollback(conn)
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
 def ensure_schema() -> None:
     path = db.current_path()
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=20)
@@ -1201,6 +1324,10 @@ def ensure_schema() -> None:
             _upgrade_v8_to_v9(conn, path)
         if version < 10:
             _upgrade_v9_to_v10(conn, path)
+        if version < 11:
+            _upgrade_v10_to_v11(conn, path)
+        if version < 12:
+            _upgrade_v11_to_v12(conn, path)
     finally:
         conn.close()
 

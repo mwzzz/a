@@ -29,7 +29,7 @@ from app.models import (
     User,
 )
 from app.security import hash_password, validate_password_strength
-from app.services import custody, options, tool_lists
+from app.services import custody, options
 from app.services.audit import write_audit
 from app.services.users import normalize_username, user_row
 from app.timeutil import now_cn, now_text
@@ -179,7 +179,6 @@ def create_merchant(
     session.add(merchant)
     session.flush()
     options.seed_defaults(session, merchant.id, actor.id)
-    tool_lists.create_default_lists(session, merchant.id)
 
     admin = None
     if admin_username:

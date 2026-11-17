@@ -83,18 +83,116 @@ def test_recognize_nine_players_and_ignore_ui_text(
 def test_tag_and_fuzzy_and_unmatched(client, admin_headers, monkeypatch) -> None:
     tagged = new_player(client, admin_headers, "小明#1234")["id"]
     fuzzy = new_player(client, admin_headers, "江南大蛇")["id"]
-    _model_returns(monkeypatch, ["小明", "江南、大蛇", "完全新人"])
+    loose = new_player(client, admin_headers, "小明爱猫")["id"]
+    _model_returns(monkeypatch, ["小明", "江南、大蛇", "小明爱狗", "完全新人"])
 
     body = _upload(client, admin_headers).json()
     assert body["items"][0]["status"] == "matched"
     assert body["items"][0]["matched_player"]["id"] == tagged
 
-    assert body["items"][1]["status"] == "ambiguous"
-    assert body["items"][1]["candidates"][0]["player"]["id"] == fuzzy
-    assert body["items"][1]["candidates"][0]["score"] >= 0.72
+    assert body["items"][1]["status"] == "matched"
+    assert body["items"][1]["matched_player"]["id"] == fuzzy
 
-    assert body["items"][2]["status"] == "unmatched"
-    assert body["items"][2]["candidates"] == []
+    assert body["items"][2]["status"] == "ambiguous"
+    assert body["items"][2]["candidates"][0]["player"]["id"] == loose
+    assert body["items"][2]["candidates"][0]["score"] >= 0.72
+
+    assert body["items"][3]["status"] == "unmatched"
+    assert body["items"][3]["candidates"] == []
+
+
+def test_fuzzy_at_eighty_percent_is_matched(
+    client, admin_headers, monkeypatch
+) -> None:
+    player_id = new_player(client, admin_headers, "专属丶黑店")["id"]
+    _model_returns(monkeypatch, ["专属、黑店"])
+
+    item = _upload(client, admin_headers).json()["items"][0]
+    assert item["status"] == "matched"
+    assert item["matched_player"]["id"] == player_id
+
+
+def test_model_retry_on_broken_json(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    class FakeResponse:
+        def __init__(self, content: str) -> None:
+            self.status_code = 200
+            self._content = content
+
+        def json(self) -> dict:
+            return {"choices": [{"message": {"content": self._content}}]}
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            calls.append(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc) -> bool:
+            return False
+
+        def post(self, *args, **kwargs) -> FakeResponse:
+            if len(calls) == 1:
+                return FakeResponse("not json")
+            return FakeResponse(
+                '{"players":[{"name":"猫","team":1,"confidence":0.9}]}'
+            )
+
+    monkeypatch.setattr(ai_recognition.httpx, "Client", FakeClient)
+    monkeypatch.setattr(settings, "ai_enabled", True)
+    monkeypatch.setattr(settings, "ai_api_key", "test-key")
+
+    rows = ai_recognition._call_model(PNG, "image/png")
+    assert len(calls) == 2
+    assert calls[0]["trust_env"] is False
+    assert rows[0]["name"] == "猫"
+
+
+def test_thinking_flag_is_optional(monkeypatch) -> None:
+    payloads: list[dict] = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self) -> dict:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"players":[{"name":"猫","team":1,"confidence":0.9}]}'
+                        }
+                    }
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc) -> bool:
+            return False
+
+        def post(self, *args, **kwargs) -> FakeResponse:
+            payloads.append(kwargs["json"])
+            return FakeResponse()
+
+    monkeypatch.setattr(ai_recognition.httpx, "Client", FakeClient)
+    monkeypatch.setattr(settings, "ai_enabled", True)
+    monkeypatch.setattr(settings, "ai_api_key", "test-key")
+
+    monkeypatch.setattr(settings, "ai_enable_thinking", False)
+    ai_recognition._call_model(PNG, "image/png")
+    assert payloads[-1]["enable_thinking"] is False
+
+    payloads.clear()
+    monkeypatch.setattr(settings, "ai_enable_thinking", None)
+    ai_recognition._call_model(PNG, "image/png")
+    assert "enable_thinking" not in payloads[-1]
 
 
 def test_same_name_is_ambiguous(client, admin_headers, monkeypatch) -> None:
@@ -173,3 +271,13 @@ def test_rate_limit(client, admin_headers, monkeypatch) -> None:
     blocked = _upload(client, admin_headers)
     assert blocked.status_code == 429
     assert "频繁" in blocked.json()["detail"]
+
+
+def test_matched_player_includes_blacklist_flag(
+    client, admin_headers, monkeypatch
+) -> None:
+    new_player(client, admin_headers, "黑名单AI哥", is_blacklisted=True)
+    _model_returns(monkeypatch, ["黑名单AI哥"])
+    item = _upload(client, admin_headers).json()["items"][0]
+    assert item["status"] == "matched"
+    assert item["matched_player"]["is_blacklisted"] is True

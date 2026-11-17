@@ -7,11 +7,17 @@
   >
     <div v-if="player" class="summary">
       <div>
-        <span class="muted">当前押金</span>
-        <DepositBadge :cents="player.deposit_cents" :level="player.deposit_level" />
+        <span class="muted">当前余额</span>
+        <DepositBadge
+          :cents="player.balance_cents"
+          :deposit-cents="player.deposit_cents"
+          :bonus-cents="player.bonus_cents"
+          :level="player.deposit_level"
+        />
       </div>
       <div><span class="muted">总局数</span><b>{{ player.games_played }}</b></div>
       <div><span class="muted">累计充值</span><b>¥{{ formatCents(totalIn) }}</b></div>
+      <div><span class="muted">累计赠金</span><b>¥{{ formatCents(bonusIn) }}</b></div>
       <div><span class="muted">累计支出</span><b>¥{{ formatCents(totalOut) }}</b></div>
     </div>
 
@@ -25,6 +31,9 @@
         <template #default="{ row }">
           <div class="cell-main">{{ row.reason_label }}</div>
           <div v-if="row.note" class="cell-sub">{{ row.note }}</div>
+          <div v-if="row.bonus_amount_cents > 0" class="cell-sub">
+            其中赠金抵扣 ¥{{ formatCents(row.bonus_amount_cents) }}
+          </div>
         </template>
       </el-table-column>
       <el-table-column label="变动" width="98" align="right">
@@ -32,9 +41,12 @@
           <MoneyText :cents="row.signed_amount_cents" change />
         </template>
       </el-table-column>
-      <el-table-column label="变动后" width="98" align="right">
+      <el-table-column label="变动后" width="126" align="right">
         <template #default="{ row }">
           <span class="mono">¥{{ formatCents(row.balance_after_cents) }}</span>
+          <div v-if="row.bonus_after_cents > 0" class="cell-sub">
+            赠金 ¥{{ formatCents(row.bonus_after_cents) }}
+          </div>
         </template>
       </el-table-column>
       <el-table-column label="操作人" width="88">
@@ -84,6 +96,7 @@ const loading = ref(false)
 
 const totalIn = ref(0)
 const totalOut = ref(0)
+const bonusIn = ref(0)
 
 watch(
   () => props.modelValue,
@@ -95,9 +108,11 @@ watch(
       const detail = await playerApi.get(props.player.id)
       totalIn.value = detail.total_in_cents || 0
       totalOut.value = detail.total_out_cents || 0
+      bonusIn.value = detail.bonus_in_cents || 0
     } catch {
       totalIn.value = 0
       totalOut.value = 0
+      bonusIn.value = 0
     }
   },
 )
@@ -125,7 +140,7 @@ function close() {
 <style scoped>
 .summary {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 12px;
   padding: 12px 14px;
   margin-bottom: 12px;

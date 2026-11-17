@@ -6,12 +6,16 @@
     :close-on-click-modal="false"
     @update:model-value="close"
   >
-    <el-form label-width="76px">
+    <el-form label-width="118px">
       <el-form-item label="游戏名" required>
         <el-input v-model="form.game_id" placeholder="游戏 id 或召唤师名" maxlength="64" />
       </el-form-item>
-      <el-form-item label="账号">
-        <el-input v-model="form.account" placeholder="可选，登录账号" maxlength="64" />
+      <el-form-item label="段位（常玩位置）">
+        <el-input
+          v-model="form.account"
+          placeholder="可选，如 钻石II / 中单、打野"
+          maxlength="64"
+        />
       </el-form-item>
       <el-form-item label="备注">
         <el-input
@@ -22,6 +26,9 @@
           show-word-limit
           placeholder="可选，比如常来的时间段"
         />
+      </el-form-item>
+      <el-form-item label="黑名单">
+        <el-switch v-model="form.is_blacklisted" active-text="禁止开游戏" />
       </el-form-item>
     </el-form>
     <template #footer>
@@ -48,7 +55,7 @@ const emit = defineEmits<{
   (event: 'saved', value: PlayerRow): void
 }>()
 
-const form = reactive({ game_id: '', account: '', remark: '' })
+const form = reactive({ game_id: '', account: '', remark: '', is_blacklisted: false })
 const saving = ref(false)
 
 watch(
@@ -58,6 +65,7 @@ watch(
     form.game_id = props.player?.game_id || ''
     form.account = props.player?.account || ''
     form.remark = props.player?.remark || ''
+    form.is_blacklisted = props.player?.is_blacklisted || false
   },
 )
 
@@ -76,6 +84,7 @@ async function submit() {
       game_id: form.game_id.trim(),
       account: form.account.trim(),
       remark: form.remark.trim(),
+      is_blacklisted: form.is_blacklisted,
     }
     const row = props.player
       ? await playerApi.update(props.player.id, payload)

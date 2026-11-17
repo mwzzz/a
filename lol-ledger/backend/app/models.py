@@ -57,7 +57,9 @@ class Player(Base):
     nickname: Mapped[str] = mapped_column(String(64), default="")
     account: Mapped[str] = mapped_column(String(64), default="")
     remark: Mapped[str] = mapped_column(String(200), default="")
+    is_blacklisted: Mapped[bool] = mapped_column(Boolean, default=False)
     deposit_cents: Mapped[int] = mapped_column(Integer, default=0)
+    bonus_cents: Mapped[int] = mapped_column(Integer, default=0)
     games_played: Mapped[int] = mapped_column(Integer, default=0)
     creator_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[str] = mapped_column(String(40))
@@ -141,6 +143,9 @@ class LedgerEntry(Base):
     amount_cents: Mapped[int] = mapped_column(Integer)
     balance_before_cents: Mapped[int] = mapped_column(Integer)
     balance_after_cents: Mapped[int] = mapped_column(Integer)
+    bonus_amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    deposit_after_cents: Mapped[int] = mapped_column(Integer, default=0)
+    bonus_after_cents: Mapped[int] = mapped_column(Integer, default=0)
     counterparty_player_id: Mapped[int | None] = mapped_column(
         ForeignKey("players.id"), nullable=True
     )
@@ -188,6 +193,19 @@ class MerchantSetting(Base):
     value: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[str] = mapped_column(String(40))
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+class RechargeCampaign(Base):
+    """充值活动档位：满 threshold_cents 送 bonus_cents，每笔取最高档一次。"""
+
+    __tablename__ = "recharge_campaigns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    merchant_id: Mapped[int] = mapped_column(ForeignKey("merchants.id"))
+    threshold_cents: Mapped[int] = mapped_column(Integer)
+    bonus_cents: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[str] = mapped_column(String(40))
 
 
 class AuditLog(Base):

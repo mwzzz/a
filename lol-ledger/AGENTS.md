@@ -16,9 +16,15 @@
 5. `.env`、SSH 私钥、任何账号密码与密钥，不进仓库、不进日志、不写进文档。
 6. 不删 `.codebuddy/`。
 
+## 开发与上线边界
+
+- 所有代码修改和测试只在本机 `lol-ledger` 工作区进行。
+- 未经用户明确说「上线 / 发布 / 同步服务器」，不得执行任何 `deploy/` 脚本，不得上传或替换服务器代码、`frontend/dist`。
+- 服务器只允许只读排查；需要写服务器时必须先得到用户明确同意。
+
 ## 技术栈与目录
 
-- 后端：FastAPI + SQLAlchemy 2.0 + SQLite（WAL），schema 版本化迁移，当前 **v10**
+- 后端：FastAPI + SQLAlchemy 2.0 + SQLite（WAL），schema 版本化迁移，当前 **v12**
 - 前端：Vue 3 + TypeScript + Element Plus + Pinia + Vite
 - 目录：`backend/app`（`api/` 路由、`services/` 业务、`migrations.py` 建表与迁移）、`backend/tests`、`frontend/src`（`views/` 页面、`api/` 请求与类型）、`deploy/`、`docs/`
 
@@ -53,7 +59,9 @@ cd frontend && npm run typecheck && npm run build
 | 分红 | 两种模式：`percent`（茶水总额 × 比例）/ `fixed`（局数 × 每局金额），存在 `merchant_settings` |
 | 差额 | 收押金 − 退押金，按 `operator_id` 汇总；**正数=店员应交，负数=店长应补**，划转不计入 |
 | 时间归属 | 场次按 `played_at`，押金与分红按 `created_at`；统一东八区，字符串字典序即时序 |
-| 余额 | `players.deposit_cents` = 该玩家所有流水净额 = 末条流水 `balance_after_cents`，三者必须相等 |
+| 赠金 | `players.bonus_cents`，只能被 `normal_deduct` 扣茶水消耗，先扣赠金再扣现金；不能退款、不能划押 |
+| 充值活动 | `recharge_campaigns` 按商家配置多档，加押金自动取满足金额的最高档送一次；Excel 导入不触发 |
+| 余额 | 现金 `players.deposit_cents` = 现金流水净额 = 末条 `deposit_after_cents`；赠金 `players.bonus_cents` = 赠金流水净额 = 末条 `bonus_after_cents`；界面总余额 = 两者相加 |
 | 分红幂等 | 同一区间（含重叠）只结算一次；历史记录只存到日期，比较前要归一化成 00:00 / 23:59:59 |
 
 对账不通过（`/api/v1/reconcile`）说明有人绕过接口改过余额，找管理员，不要自行修数据。

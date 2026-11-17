@@ -13,11 +13,12 @@ REASON_LABELS = {
     "normal_deduct": "正常扣押",
     "refund": "退押金",
     "add_deposit": "加押金",
+    "add_bonus": "加赠金",
     "transfer_out": "划押转出",
     "transfer_in": "划押转入",
 }
 
-INCOMING_REASONS = {"add_deposit", "transfer_in"}
+INCOMING_REASONS = {"add_deposit", "transfer_in", "add_bonus"}
 
 
 def parse_yuan(text: str) -> int:

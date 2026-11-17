@@ -5,14 +5,20 @@
     powershell -ExecutionPolicy Bypass -File deploy/push.ps1
     powershell -ExecutionPolicy Bypass -File deploy/push.ps1 -Server root@1.2.3.4 -Key C:\path\key.pem
     powershell -ExecutionPolicy Bypass -File deploy/push.ps1 -SkipBuild   # 前端已构建过
+    powershell -ExecutionPolicy Bypass -File deploy/push.ps1 -SkipEnv     # 不同步 .env
 
   默认目标：root@116.62.242.2，密钥 %USERPROFILE%\.ssh\_mw.pem（权限必须是仅本人可读）。
   服务器上必须已跑过一次 deploy/install.sh。
+
+  .env：默认把本机 backend/.env 合并到服务器 /opt/lol-ledger/.env。
+  只覆盖本机存在的键，保留服务器独有键；JWT_SECRET、DB_PATH、DEBUG、
+  CORS_ORIGINS 永不覆盖；合并前自动备份为 data/backups/env-<时间>.bak。
 #>
 param(
     [string]$Server = "root@116.62.242.2",
     [string]$Key = "$env:USERPROFILE\.ssh\_mw.pem",
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$SkipEnv
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,6 +32,27 @@ $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $tmp = Join-Path $env:TEMP "lol-push-$stamp"
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 $hostOnly = $Server.Split("@")[-1]
+
+$envMerge = Join-Path $tmp "lol-env.merge"
+$hasEnvMerge = $false
+$localEnv = Join-Path $root "backend\.env"
+$protectedEnvKeys = @("JWT_SECRET", "DB_PATH", "DEBUG", "CORS_ORIGINS")
+if (-not $SkipEnv -and (Test-Path -LiteralPath $localEnv)) {
+    $kept = foreach ($line in (Get-Content -LiteralPath $localEnv -Encoding UTF8)) {
+        $trim = $line.Trim()
+        if (-not $trim -or $trim.StartsWith("#")) { continue }
+        $eq = $trim.IndexOf("=")
+        if ($eq -le 0) { continue }
+        $keyName = $trim.Substring(0, $eq).Trim()
+        if ($protectedEnvKeys -contains $keyName) { continue }
+        $trim
+    }
+    if ($kept) {
+        [IO.File]::WriteAllText($envMerge, (($kept -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        $hasEnvMerge = $true
+        Write-Host "==> 准备同步 .env（受保护的键不会覆盖）" -ForegroundColor Cyan
+    }
+}
 
 try {
     if (-not $SkipBuild) {
@@ -51,9 +78,17 @@ try {
     scp -i $Key -o BatchMode=yes -o StrictHostKeyChecking=accept-new $backendTar $distTar "${Server}:/tmp/"
     if ($LASTEXITCODE -ne 0) { throw "上传失败" }
 
+    if ($hasEnvMerge) {
+        ssh -i $Key -o BatchMode=yes $Server "rm -f /tmp/lol-env.merge"
+        scp -i $Key -o BatchMode=yes $envMerge "${Server}:/tmp/lol-env.merge"
+        if ($LASTEXITCODE -ne 0) { throw "上传 .env 失败" }
+        ssh -i $Key -o BatchMode=yes $Server "chmod 600 /tmp/lol-env.merge"
+    }
+
     $remote = @'
 set -euo pipefail
 trap 'echo "!! 部署中断，尝试启动服务"; sudo systemctl start lol-ledger-api || true' ERR
+trap 'rm -f /tmp/lol-env.merge 2>/dev/null || true' EXIT
 
 echo "==> 留存当前版本（代码 + 前端产物，保留最近 5 份）"
 BK=/opt/lol-ledger/data/backups
@@ -96,6 +131,23 @@ echo "==> 同步 nginx 配置"
 sudo cp -f /opt/lol-ledger/deploy/nginx-lol-ledger.conf /etc/nginx/conf.d/lol-ledger.conf
 sudo nginx -t
 sudo systemctl reload nginx
+
+echo "==> 合并 .env（备份后只覆盖非受保护键）"
+if [ -f /tmp/lol-env.merge ]; then
+  BK=/opt/lol-ledger/data/backups
+  sudo mkdir -p "$BK"
+  ENV_STAMP=$(TZ=Asia/Shanghai date +%Y%m%d-%H%M%S)
+  if [ -f /opt/lol-ledger/.env ]; then
+    sudo cp -a /opt/lol-ledger/.env "$BK/env-$ENV_STAMP.bak"
+    echo "   已备份 $BK/env-$ENV_STAMP.bak"
+  fi
+  sudo /opt/lol-ledger/venv/bin/python /opt/lol-ledger/deploy/merge_env.py /tmp/lol-env.merge /opt/lol-ledger/.env
+  sudo chown root:lol /opt/lol-ledger/.env
+  sudo chmod 640 /opt/lol-ledger/.env
+  sudo shred -u /tmp/lol-env.merge 2>/dev/null || sudo rm -f /tmp/lol-env.merge
+else
+  echo "   未提供 backend/.env，跳过"
+fi
 
 echo "==> 重启服务"
 sudo systemctl restart lol-ledger-api

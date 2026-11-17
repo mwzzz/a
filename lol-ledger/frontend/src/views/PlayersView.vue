@@ -2,16 +2,22 @@
   <div class="page">
     <div class="page-head">
       <span class="page-title">玩家</span>
-      <span class="page-sub">共 {{ total }} 人 · 总押金 ¥{{ formatCents(totalDeposit) }}</span>
+      <span class="page-sub">
+        共 {{ total }} 人 · 总押金 ¥{{ formatCents(totalDeposit) }}
+        <template v-if="totalBonus > 0">· 赠金 ¥{{ formatCents(totalBonus) }}</template>
+      </span>
       <div class="spacer"></div>
       <el-button :icon="Upload" @click="importVisible = true">批量导入</el-button>
+      <el-button :icon="Download" :loading="exporting" @click="exportPlayers">
+        导出玩家库
+      </el-button>
       <el-button type="primary" :icon="Plus" @click="openCreate">新增玩家</el-button>
     </div>
 
     <div class="toolbar">
       <el-input
         v-model="keyword"
-        placeholder="搜索游戏名、账号或备注"
+        placeholder="搜索游戏名、段位或备注"
         clearable
         style="width: 250px"
         @keyup.enter="reload"
@@ -29,6 +35,12 @@
         <el-option label="充足（绿）" value="safe" />
       </el-select>
 
+      <el-select v-model="blacklisted" placeholder="全部玩家" style="width: 132px" @change="reload">
+        <el-option label="全部玩家" value="" />
+        <el-option label="仅黑名单" value="only" />
+        <el-option label="非黑名单" value="normal" />
+      </el-select>
+
       <el-select v-model="sort" style="width: 150px" @change="reload">
         <el-option label="总局数 ↓" value="games_played_desc" />
         <el-option label="押金 ↓" value="deposit_desc" />
@@ -39,7 +51,7 @@
 
       <el-button :icon="Refresh" @click="reload">刷新</el-button>
       <div class="spacer"></div>
-      <span class="muted small">低于 ¥{{ formatCents(lowCents) }} 红色 · 超过 ¥{{ formatCents(highCents) }} 绿色</span>
+      <span class="muted small">低于 ¥{{ formatCents(lowCents) }} 算押金不足 · 超过 ¥{{ formatCents(highCents) }} 显示绿色</span>
     </div>
 
     <div class="panel desktop-only">
@@ -51,18 +63,26 @@
       >
         <el-table-column label="游戏名" min-width="280">
           <template #default="{ row }">
-            <div class="cell-main">{{ row.game_id }}</div>
+            <div class="cell-main">
+              {{ row.game_id }}
+              <el-tag v-if="row.is_blacklisted" type="danger" size="small" effect="dark">黑名单</el-tag>
+            </div>
             <div class="cell-sub">
               <span>创建者 {{ row.creator?.display_name || '-' }}</span>
-              <span v-if="row.account"> · 账号 {{ row.account }}</span>
+              <span v-if="row.account"> · 段位 {{ row.account }}</span>
               <span v-if="row.remark"> · {{ row.remark }}</span>
             </div>
           </template>
         </el-table-column>
 
-        <el-table-column label="押金" width="120" align="right">
+        <el-table-column label="押金" width="190" align="right">
           <template #default="{ row }">
-            <DepositBadge :cents="row.deposit_cents" :level="row.deposit_level" />
+            <DepositBadge
+              :cents="row.balance_cents"
+              :deposit-cents="row.deposit_cents"
+              :bonus-cents="row.bonus_cents"
+              :level="row.deposit_level"
+            />
           </template>
         </el-table-column>
 
@@ -80,13 +100,17 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="268" align="right">
+        <el-table-column label="操作" width="430" align="right">
           <template #default="{ row }">
             <div class="ops">
               <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
               <el-button link type="primary" @click="openDeposit(row, 'add')">加押金</el-button>
               <el-button link type="warning" @click="openDeposit(row, 'refund')">退押金</el-button>
+              <el-button link type="success" @click="openDeposit(row, 'bonus')">加赠金</el-button>
               <el-button link type="primary" @click="openTransfer(row)">划押</el-button>
+              <el-button link type="danger" @click="toggleBlacklist(row)">
+                {{ row.is_blacklisted ? '移出黑名单' : '拉黑' }}
+              </el-button>
               <el-button v-if="auth.isAdmin" link type="danger" @click="remove(row)">删除</el-button>
             </div>
           </template>
@@ -112,26 +136,40 @@
       <div v-for="row in rows" :key="row.id" class="player-card" @click="openLedger(row)">
         <div class="player-card-head">
           <div>
-            <div class="player-name">{{ row.game_id }}</div>
+            <div class="player-name">
+              {{ row.game_id }}
+              <el-tag v-if="row.is_blacklisted" type="danger" size="small" effect="dark">黑名单</el-tag>
+            </div>
             <div class="cell-sub">
               创建者 {{ row.creator?.display_name || '-' }} · {{ row.games_played }} 局
             </div>
           </div>
           <div class="player-deposit">
             <span class="muted">押金</span>
-            <DepositBadge :cents="row.deposit_cents" :level="row.deposit_level" />
+            <DepositBadge
+              :cents="row.balance_cents"
+              :deposit-cents="row.deposit_cents"
+              :bonus-cents="row.bonus_cents"
+              :level="row.deposit_level"
+            />
           </div>
         </div>
         <div class="player-card-meta">
           <span>最后活动 {{ relative(row.last_active_at) }}</span>
-          <span v-if="row.account">账号 {{ row.account }}</span>
+          <span v-if="row.account">段位 {{ row.account }}</span>
           <span v-if="row.remark">{{ row.remark }}</span>
         </div>
         <div class="player-card-ops" @click.stop>
           <el-button size="small" @click="openDeposit(row, 'add')">加押金</el-button>
           <el-button size="small" @click="openDeposit(row, 'refund')">退押金</el-button>
+          <el-button size="small" type="success" plain @click="openDeposit(row, 'bonus')">
+            加赠金
+          </el-button>
           <el-button size="small" @click="openTransfer(row)">划押</el-button>
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button size="small" type="danger" plain @click="toggleBlacklist(row)">
+            {{ row.is_blacklisted ? '移出黑名单' : '拉黑' }}
+          </el-button>
         </div>
       </div>
       <div v-if="!loading && !rows.length" class="empty-hint">还没有玩家</div>
@@ -168,7 +206,7 @@
 </template>
 
 <script setup lang="ts">
-import { Plus, Refresh, Search, Upload } from '@element-plus/icons-vue'
+import { Download, Plus, Refresh, Search, Upload } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -193,24 +231,27 @@ const rows = ref<PlayerRow[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
-const keyword = ref('')
+const keyword = ref(typeof route.query.keyword === 'string' ? route.query.keyword : '')
 const level = ref('')
 const sort = ref('deposit_asc')
+const blacklisted = ref<'' | 'only' | 'normal'>('')
 const loading = ref(false)
 
 const totalDeposit = ref(0)
+const totalBonus = ref(0)
 const lowCents = ref(3000)
 const highCents = ref(6000)
 const lastTeaCents = ref(200)
 
 const formVisible = ref(false)
 const importVisible = ref(false)
+const exporting = ref(false)
 const depositVisible = ref(false)
 const transferVisible = ref(false)
 const ledgerVisible = ref(false)
 const editing = ref<PlayerRow | null>(null)
 const active = ref<PlayerRow | null>(null)
-const depositMode = ref<'add' | 'refund'>('add')
+const depositMode = ref<'add' | 'refund' | 'bonus'>('add')
 
 const defaultTransferCents = computed(() => lastTeaCents.value * 10)
 
@@ -223,6 +264,12 @@ async function load() {
       keyword: keyword.value.trim(),
       level: level.value || undefined,
       sort: sort.value,
+      blacklisted:
+        blacklisted.value === 'only'
+          ? true
+          : blacklisted.value === 'normal'
+            ? false
+            : undefined,
       page: page.value,
       page_size: pageSize.value,
     })
@@ -237,6 +284,7 @@ async function loadSummary() {
   try {
     const data = await overviewApi.get()
     totalDeposit.value = data.total_deposit_cents
+    totalBonus.value = data.total_bonus_cents || 0
     lowCents.value = data.deposit_low_cents
     highCents.value = data.deposit_high_cents
   } catch {
@@ -249,6 +297,25 @@ function reload() {
   load()
 }
 
+async function exportPlayers() {
+  exporting.value = true
+  try {
+    const { blob, filename } = await playerApi.exportFile()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  } catch {
+    /* 错误提示由 axios 拦截器统一处理 */
+  } finally {
+    exporting.value = false
+  }
+}
+
 function openCreate() {
   editing.value = null
   formVisible.value = true
@@ -259,7 +326,7 @@ function openEdit(row: PlayerRow) {
   formVisible.value = true
 }
 
-function openDeposit(row: PlayerRow, mode: 'add' | 'refund') {
+function openDeposit(row: PlayerRow, mode: 'add' | 'refund' | 'bonus') {
   active.value = row
   depositMode.value = mode
   depositVisible.value = true
@@ -286,6 +353,24 @@ function onPlayerChanged(player: PlayerRow) {
   loadSummary()
 }
 
+async function toggleBlacklist(row: PlayerRow) {
+  const next = !row.is_blacklisted
+  try {
+    await ElMessageBox.confirm(
+      next
+        ? `将「${row.game_id}」加入黑名单？加入后不能开游戏。`
+        : `将「${row.game_id}」移出黑名单？`,
+      next ? '加入黑名单' : '移出黑名单',
+      { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  await playerApi.update(row.id, { is_blacklisted: next })
+  ElMessage.success(next ? '已加入黑名单' : '已移出黑名单')
+  reload()
+}
+
 async function remove(row: PlayerRow) {
   try {
     await ElMessageBox.confirm(
@@ -306,6 +391,14 @@ watch(keyword, () => {
   window.clearTimeout(timer)
   timer = window.setTimeout(reload, 400)
 })
+
+watch(
+  () => route.query.keyword,
+  (value) => {
+    const text = typeof value === 'string' ? value : ''
+    if (text !== keyword.value) keyword.value = text
+  },
+)
 
 function handleQueryAction() {
   if (route.query.new === '1') {

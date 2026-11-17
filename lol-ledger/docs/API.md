@@ -44,7 +44,8 @@ Authorization: Bearer <access_token>
       "confidence": 0.95,
       "team": 1,
       "matched_player": {
-        "id": 12, "game_id": "山中刘德华、", "account": "", "deposit_cents": 5000
+        "id": 12, "game_id": "山中刘德华、", "account": "",
+        "deposit_cents": 5000, "is_blacklisted": false
       },
       "candidates": []
     }
@@ -55,10 +56,10 @@ Authorization: Bearer <access_token>
 }
 ```
 
-- `status`：`matched` 精确匹配 / `ambiguous` 需要人工选候选 / `unmatched` 未匹配
+- `status`：`matched` 匹配（精确或相似度 ≥0.8）/ `ambiguous` 需要人工选候选 / `unmatched` 未匹配
 - 只匹配当前商家未删除玩家，不写任何业务数据
 - 每用户 10 次/分钟；超时 25 秒；未配置或模型异常时返回 503/504/502，前端降级为手动选人
-- 模糊候选阈值 0.72，最多 3 个；`名字#tag` 会兼容匹配
+- 模糊候选阈值 0.72，最多 3 个；相似度 ≥0.8 直接按匹配返回；`名字#tag` 会兼容匹配
 
 ## 平台（仅开发者账号）
 
@@ -93,14 +94,17 @@ Authorization: Bearer <access_token>
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/players` | `keyword, level(low/warn/safe), sort, page, page_size` |
-| GET | `/players/options` | `keyword, exclude_ids=1,2, limit`，给下拉框用 |
-| POST | `/players` | `{game_id, account?, remark?}` |
-| POST | `/players/import` | `multipart/form-data`，字段 `file`；仅 `.xls/.xlsx`，第一列玩家 id，第二列押金（元，可空） |
-| GET | `/players/{id}` | 详情，含累计充值/支出 |
-| PATCH | `/players/{id}` | 改游戏名 / 账号 / 备注 |
-| DELETE | `/players/{id}` | 软删除，押金必须为 0，仅管理员 |
+| GET | `/players` | `keyword, level(low/warn/safe), sort, blacklisted(true/false), page, page_size` |
+| GET | `/players/options` | `keyword, exclude_ids=1,2, limit`，给下拉框用，返回含 `is_blacklisted`、`deposit_cents`、`bonus_cents`、`balance_cents` |
+| POST | `/players` | `{game_id, account?, remark?, is_blacklisted?}` |
+| POST | `/players/import` | `multipart/form-data`，字段 `file`；仅 `.xls/.xlsx`，第一列玩家 id，第二列押金（元，可空）；导入不触发充值活动 |
+| GET | `/players/export` | 导出玩家库 `.xlsx`，两列：游戏名、押金(元)；押金只含现金部分，当前商家全部未删除玩家 |
+| GET | `/players/{id}` | 详情，含现金押金、赠金、总余额、累计充值/支出 |
+| PATCH | `/players/{id}` | 改游戏名 / 段位 / 备注 / 黑名单标记 `is_blacklisted` |
+| DELETE | `/players/{id}` | 软删除，现金押金和赠金都必须为 0，仅管理员 |
 | GET | `/players/{id}/ledger` | 个人流水，分页 |
+
+`account` 字段现在用于存段位（常玩位置），例如「钻石II / 中单、打野」；前端表单、玩家列表和 AI 识别结果都按「段位」展示。
 
 `sort` 可选：`games_played_desc`（默认）、`deposit_desc`、`deposit_asc`、`last_active_desc`、`game_id_asc`。
 
@@ -110,13 +114,22 @@ Authorization: Bearer <access_token>
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/players/{id}/deposits` | 加押金，`{amount_cents, note?}`，必须 > 0 |
-| POST | `/players/{id}/refunds` | 退押金，不能超过余额 |
-| POST | `/transfers` | `{from_player_id, to_player_id, amount_cents, note?}` |
+| POST | `/players/{id}/deposits` | 加押金，`{amount_cents, note?}`，必须 > 0；命中充值活动时同事务追加 `add_bonus` 流水，返回 `{entry, bonus_entry, campaign, player}` |
+| POST | `/players/{id}/bonus` | 手动加赠金，`{amount_cents, note?}`，必须 > 0；管理员和店员都可用 |
+| POST | `/players/{id}/refunds` | 退押金，不能超过现金押金；玩家有赠金时拒绝，赠金为 0 后才能退 |
+| POST | `/transfers` | `{from_player_id, to_player_id, amount_cents, note?}`；只动现金押金，有赠金时不能超过现金部分 |
 
 手动扣押已取消，历史数据在 v4 迁移时并入 `refund`。
 
-返回 `{entry, player}`，`entry.reason_label` 已经拼好中文（划转带对手名和箭头）。
+玩家对象金额字段：
+
+- `deposit_cents`：现金押金，可退款/划押；
+- `bonus_cents`：赠金，只能扣茶水；
+- `balance_cents = deposit_cents + bonus_cents`：界面显示的总余额。
+
+流水新增 `bonus_amount_cents`（本笔赠金抵扣额）、`deposit_after_cents`（变动后现金）、`bonus_after_cents`（变动后赠金）；`balance_after_cents` 为总余额。
+
+返回 `{entry, player}`；加押金命中活动时还返回 `bonus_entry` 和 `campaign`。`entry.reason_label` 已经拼好中文（划转带对手名和箭头）。
 
 ## 批次
 
@@ -164,19 +177,25 @@ opening_total_cents`。
 | POST | `/sessions` | `{batch_id?, name?, played_at?, note?, tea_fee_cents, player_ids}` |
 | GET | `/sessions/{id}` | 场次详情，含每人扣费 |
 
-规则：1~10 人、自动去重、每人扣相同茶水、允许扣成负数、整局一个事务。
+规则：1~10 人、自动去重、每人扣相同茶水、允许扣成负数、整局一个事务。常用名单「免茶水」分类里的玩家会被自动排除（按游戏 id，忽略 `#后缀` 和大小写）；黑名单玩家不能开局，返回 400。
 
 ## 记录与总览
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/records/deposits` | `keyword, player_id, batch_id, session_id, reason, date_from, date_to, sort, page, page_size` |
-| GET | `/records/sessions` | 场次记录 |
+| GET | `/records/deposits` | `keyword, player_id, batch_id, session_id, operator_id, reason, date_from, date_to, sort, page, page_size` |
+| GET | `/records/sessions` | 场次记录，支持 `operator_id` |
+| GET | `/records/operators` | 本店操作人（含已停用），供筛选下拉 |
+| GET | `/records/operator-summary` | `operator_id, date_from, date_to`；返回收押金、退押金、差额、笔数，划转不计入 |
 | GET | `/records/transfers/{group_id}` | 一笔划转的两条流水 |
-| GET | `/overview` | 玩家押金余额、在用玩家、低押金人数、**本班统计**、在库现金/保管人、最近 10 条 |
-| GET | `/reconcile` | 对账，仅管理员 |
+| GET | `/overview` | 现金押金合计、赠金合计、在用玩家、低押金人数、今日统计、最近 10 条 |
+| GET | `/reconcile` | 对账，仅管理员；同时校验现金押金和赠金两条恒等式 |
 | GET | `/settings` | 读设置，含 `dividend_rate_percent`、`dividend_mode`、`dividend_fixed_cents` |
 | PATCH | `/settings` | 改设置，仅管理员；`dividend_rate_percent` 0~100；`dividend_mode` 为 `percent`/`fixed`；`dividend_fixed_cents` 0~1000000，`fixed` 模式下必须大于 0 |
+| GET | `/settings/recharge-campaigns` | 充值活动档位列表，任意登录账号可读 |
+| POST | `/settings/recharge-campaigns` | 新增档位 `{threshold_cents, bonus_cents}`，仅管理员 |
+| PATCH | `/settings/recharge-campaigns/{id}` | 修改档位，仅管理员 |
+| DELETE | `/settings/recharge-campaigns/{id}` | 删除档位，仅管理员；已产生的赠金流水不变 |
 | POST | `/ai/recognize-players` | 本期固定 501（AI 识别占位） |
 
 ## 小工具 · 排队登记（店员和管理员都可用）

@@ -19,6 +19,18 @@ export function formatCents(cents: number | null | undefined): string {
   return `${sign}${Math.trunc(abs / 100)}.${String(abs % 100).padStart(2, '0')}`
 }
 
+/** 总余额（押金 + 赠金）；有赠金时括号里补现金押金。 */
+export function formatBalance(
+  balanceCents: number | null | undefined,
+  bonusCents: number | null | undefined,
+  depositCents: number | null | undefined,
+): string {
+  const total = formatCents(balanceCents)
+  return Number(bonusCents || 0) > 0
+    ? `${total}（押金 ${formatCents(depositCents)}）`
+    : total
+}
+
 export function formatChange(cents: number | null | undefined): string {
   const value = Number(cents || 0)
   return value > 0 ? `+${formatCents(value)}` : formatCents(value)

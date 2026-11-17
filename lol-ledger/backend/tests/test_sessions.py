@@ -178,3 +178,87 @@ def test_preview_shows_negative_players(client, admin_headers) -> None:
     assert body["negative_count"] == 1
     assert body["negative_players"] == ["穷鬼"]
     assert body["items"][0]["after_cents"] == -200
+
+
+def test_default_session_name_increments_same_day(client, admin_headers) -> None:
+    pid = new_player(client, admin_headers, "连开哥")["id"]
+    first = create_session(
+        client,
+        admin_headers,
+        open_batch(client, admin_headers),
+        [pid],
+        tea=100,
+        played_at="2026-11-13T10:00:00+08:00",
+    )
+    second = create_session(
+        client,
+        admin_headers,
+        open_batch(client, admin_headers),
+        [pid],
+        tea=100,
+        played_at="2026-11-13T11:00:00+08:00",
+    )
+    assert first["name"].endswith("第1局")
+    assert second["name"].endswith("第2局")
+
+
+def _tea_free_list_id(client, headers) -> int:
+    lists = client.get("/api/v1/tools/name-lists", headers=headers).json()["lists"]
+    return next(item for item in lists if item["name"] == "免茶水")["id"]
+
+
+def test_tea_free_players_are_removed(client, admin_headers) -> None:
+    free = new_player(client, admin_headers, "免茶哥#123")
+    paid = new_player(client, admin_headers, "正常哥")
+    list_id = _tea_free_list_id(client, admin_headers)
+    created = client.post(
+        f"/api/v1/tools/name-lists/{list_id}/items",
+        json={"content": "免茶哥"},
+        headers=admin_headers,
+    )
+    assert created.status_code == 201, created.text
+
+    body = create_session(
+        client,
+        admin_headers,
+        open_batch(client, admin_headers),
+        [free["id"], paid["id"]],
+        tea=100,
+    )
+    assert body["player_count"] == 1
+    assert body["players"][0]["game_id"] == "正常哥"
+    assert body["tea_free_removed"] == ["免茶哥#123"]
+
+    free_detail = client.get(
+        f"/api/v1/players/{free['id']}", headers=admin_headers
+    ).json()
+    assert free_detail["deposit_cents"] == 0
+    assert free_detail["games_played"] == 0
+
+
+def test_all_tea_free_players_rejected(client, admin_headers) -> None:
+    free = new_player(client, admin_headers, "只免茶")["id"]
+    list_id = _tea_free_list_id(client, admin_headers)
+    client.post(
+        f"/api/v1/tools/name-lists/{list_id}/items",
+        json={"content": "只免茶"},
+        headers=admin_headers,
+    )
+    response = client.post(
+        "/api/v1/sessions",
+        json={"tea_fee_cents": 100, "player_ids": [free]},
+        headers=admin_headers,
+    )
+    assert response.status_code == 400
+    assert "免茶水" in response.json()["detail"]
+
+
+def test_blacklisted_player_cannot_open_session(client, admin_headers) -> None:
+    blocked = new_player(client, admin_headers, "黑名单哥", is_blacklisted=True)["id"]
+    response = client.post(
+        "/api/v1/sessions",
+        json={"tea_fee_cents": 100, "player_ids": [blocked]},
+        headers=admin_headers,
+    )
+    assert response.status_code == 400
+    assert "黑名单" in response.json()["detail"]

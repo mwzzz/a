@@ -10,6 +10,8 @@ export const useAppStore = defineStore('app', {
     theme: localStorage.getItem(THEME_KEY) || 'dark',
     today: null as SummaryTotals | null,
     todayLoaded: false,
+    todayLoading: false,
+    todayError: false,
   }),
   actions: {
     applyTheme() {
@@ -21,12 +23,16 @@ export const useAppStore = defineStore('app', {
       this.applyTheme()
     },
     async refreshToday() {
+      this.todayLoading = true
+      this.todayError = false
       try {
         const payload = await overviewApi.get()
         this.today = payload.today
       } catch {
         this.today = null
+        this.todayError = true
       } finally {
+        this.todayLoading = false
         this.todayLoaded = true
       }
     },

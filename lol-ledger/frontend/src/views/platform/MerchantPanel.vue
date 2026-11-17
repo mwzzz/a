@@ -279,24 +279,26 @@
           :closable="false"
           show-icon
           title="删除后不可恢复"
-          description="玩家、押金流水、班次、场次、现金交接、分红结算会一起删除。"
+          description="玩家、押金流水、场次、现金交接、分红结算会一起删除。"
         />
+
+        <div v-if="purgeError" class="purge-error">
+          <span>清空范围读取失败，未看到删除数量和警告前不能继续。</span>
+          <el-button link type="primary" :loading="purgeLoading" @click="retryPurgePreview">
+            重试
+          </el-button>
+        </div>
 
         <div v-if="purgePreview" class="purge-counts">
           <div><span>玩家</span><b>{{ purgePreview.counts.players }}</b></div>
-          <div><span>班次</span><b>{{ purgePreview.counts.batches }}</b></div>
           <div><span>场次</span><b>{{ purgePreview.counts.sessions }}</b></div>
           <div><span>流水</span><b>{{ purgePreview.counts.ledger }}</b></div>
           <div><span>分红结算</span><b>{{ purgePreview.counts.settlements }}</b></div>
         </div>
 
         <div v-if="purgePreview" class="purge-custody">
-          当前在库
-          <b>¥{{ formatCents(purgePreview.custody.amount_cents) }}</b>
-          <span class="muted small">
-            （押金 ¥{{ formatCents(purgePreview.custody.deposit_cents) }} + 本班茶水
-            ¥{{ formatCents(purgePreview.custody.tea_cents) }}）
-          </span>
+          当前玩家押金合计
+          <b>¥{{ formatCents(purgePreview.deposit_total_cents) }}</b>
         </div>
 
         <ul v-if="purgePreview?.warnings.length" class="purge-warnings">
@@ -315,6 +317,7 @@
             <el-input
               v-model="purgeConfirm"
               :placeholder="`逐字输入商家名：${purgeTarget?.name || ''}`"
+              :disabled="!purgePreview || purgeLoading || purgeError"
               autocomplete="off"
             />
           </el-form-item>
@@ -381,14 +384,19 @@ const resetPassword = ref('')
 
 const purgeVisible = ref(false)
 const purgeLoading = ref(false)
+const purgeError = ref(false)
 const purging = ref(false)
 const purgeTarget = ref<PlatformMerchantRow | null>(null)
 const purgePreview = ref<MerchantPurgePreview | null>(null)
 const purgeConfirm = ref('')
 const purgeNote = ref('')
+let purgeSeq = 0
 const canPurge = computed(
   () =>
     !!purgeTarget.value &&
+    !!purgePreview.value &&
+    !purgeLoading.value &&
+    !purgeError.value &&
     purgeConfirm.value.trim() === purgeTarget.value.name &&
     !purging.value,
 )
@@ -449,19 +457,31 @@ function openPurge(row: PlatformMerchantRow) {
   purgeConfirm.value = ''
   purgeNote.value = ''
   purgePreview.value = null
+  purgeError.value = false
   purgeVisible.value = true
   void loadPurgePreview(row.id)
 }
 
 async function loadPurgePreview(id: number) {
+  const seq = ++purgeSeq
   purgeLoading.value = true
+  purgeError.value = false
   try {
-    purgePreview.value = await platformApi.purgePreview(id)
+    const preview = await platformApi.purgePreview(id)
+    if (seq !== purgeSeq) return
+    purgePreview.value = preview
   } catch {
-    ElMessage.error('读取清空范围失败，请刷新后重试')
+    if (seq !== purgeSeq) return
+    purgePreview.value = null
+    purgeError.value = true
+    ElMessage.error('读取清空范围失败，请重试')
   } finally {
-    purgeLoading.value = false
+    if (seq === purgeSeq) purgeLoading.value = false
   }
+}
+
+function retryPurgePreview() {
+  if (purgeTarget.value) void loadPurgePreview(purgeTarget.value.id)
 }
 
 async function submitPurge() {
@@ -788,5 +808,17 @@ onMounted(loadMerchants)
   .purge-counts {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+}
+.purge-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--el-color-danger-light-5);
+  border-radius: 8px;
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
+  font-size: 12.5px;
 }
 </style>

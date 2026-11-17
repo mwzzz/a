@@ -1,119 +1,128 @@
 <template>
-  <div class="page">
+  <div v-loading="loading && !!data" element-loading-text="正在刷新…" class="page">
     <div class="page-head">
       <span class="page-title">工作台</span>
-      <span class="page-sub">这一班的现金、营业和待处理事项</span>
+      <span class="page-sub">今日经营、押金与待处理事项</span>
       <div class="spacer"></div>
-      <el-button :icon="Refresh" @click="load">刷新</el-button>
+      <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
     </div>
 
-    <div v-loading="loading" class="hero panel">
-      <div class="hero-main">
-        <div class="hero-top">
-          <StatusTag type="success" :label="`今天 ${data?.today.session_count || 0} 局`" />
-          <span class="muted">{{ data?.date || '' }}</span>
+    <div v-if="error" class="panel state-panel">
+      <div class="state-title">数据暂不可用</div>
+      <div class="state-desc muted">工作台数据没有加载成功，请检查网络或服务后重试。</div>
+      <el-button type="primary" :loading="loading" @click="load">重试</el-button>
+    </div>
+    <div
+      v-else-if="loading && !data"
+      v-loading="true"
+      element-loading-text="正在加载工作台数据…"
+      class="panel state-panel state-loading"
+    >
+      <div class="state-title">正在加载工作台数据…</div>
+    </div>
+    <template v-else-if="data">
+    <div class="hero panel">
+      <div class="hero-head">
+        <div>
+          <div class="hero-title">今日经营</div>
+          <div class="muted small">{{ data?.date || '' }}</div>
         </div>
-        <div class="hero-cash">
-          <span class="hero-label">玩家押金总额</span>
+        <div class="hero-actions">
+          <el-button type="primary" :icon="VideoPlay" @click="openSession">开一局</el-button>
+          <el-button :icon="Wallet" @click="goPlayers">加押金</el-button>
+          <el-button :icon="TrendCharts" @click="router.push({ name: 'summary' })">看汇总</el-button>
+        </div>
+      </div>
+      <div class="hero-stats">
+        <div class="hero-stat">
+          <span>今日差额</span>
+          <b :class="(data?.today.cash_diff_cents || 0) < 0 ? 'diff-out' : 'diff-in'">
+            ¥{{ formatCents(data?.today.cash_diff_cents || 0) }}
+          </b>
+          <small>{{ (data?.today.cash_diff_cents || 0) < 0 ? '店长应补' : '店员应交' }}</small>
+        </div>
+        <div class="hero-stat">
+          <span>今日茶水</span>
+          <b>¥{{ formatCents(data?.today.tea_cents || 0) }}</b>
+          <small>按本日场次累计</small>
+        </div>
+        <div class="hero-stat">
+          <span>玩家押金总额</span>
           <b>¥{{ formatCents(data?.total_deposit_cents || 0) }}</b>
+          <small>
+            当前在库押金
+            <template v-if="(data?.total_bonus_cents || 0) > 0">
+              · 赠金 ¥{{ formatCents(data?.total_bonus_cents) }}
+            </template>
+          </small>
         </div>
-        <div class="hero-meta">
-          <span>{{ data?.player_count || 0 }} 个在用玩家</span>
-          <span class="sep">·</span>
-          <span>今日茶水 <b>¥{{ formatCents(data?.today.tea_cents || 0) }}</b></span>
-          <span class="sep">·</span>
-          <span>今日差额 <b>¥{{ formatCents(data?.today.cash_diff_cents || 0) }}</b></span>
+        <div
+          class="hero-stat clickable"
+          :class="{ alert: (data?.low_deposit_count || 0) > 0 }"
+          @click="goPlayers"
+        >
+          <span>押金不足</span>
+          <b :class="{ 'diff-out': (data?.low_deposit_count || 0) > 0 }">
+            {{ data?.low_deposit_count || 0 }} 人
+          </b>
+          <small>低于 ¥{{ formatCents(data?.deposit_low_cents || 3000) }}，点此去催补</small>
         </div>
       </div>
-      <div class="hero-actions">
-        <el-button type="primary" :icon="VideoPlay" @click="openSession">开一局</el-button>
-        <el-button :icon="Wallet" @click="goPlayers">加押金</el-button>
-        <el-button :icon="TrendCharts" @click="router.push({ name: 'summary' })">看汇总</el-button>
-      </div>
-    </div>
-
-    <div class="metric-grid">
-      <StatCard
-        label="今日茶水"
-        :value="'¥' + formatCents(data?.today.tea_cents || 0)"
-        tone="good"
-        :hint="`${data?.today.session_count || 0} 局 · ${data?.today.player_times || 0} 人次`"
-      />
-      <StatCard
-        label="今日收押金"
-        :value="'¥' + formatCents(data?.today.add_deposit_cents || 0)"
-        :hint="`退押金 ¥${formatCents(data?.today.refund_cents || 0)}`"
-      />
-      <StatCard
-        label="押金不足"
-        :value="`${data?.low_deposit_count || 0} 人`"
-        :tone="(data?.low_deposit_count || 0) > 0 ? 'bad' : 'default'"
-        :hint="`低于 ¥${formatCents(data?.deposit_low_cents || 3000)}，点此去催补`"
-        @click="goPlayers"
-      />
     </div>
 
     <div class="work-grid">
       <div class="panel block">
         <div class="section-head">
-          <div class="section-title">今日概览</div>
-          <span class="muted small">
-            {{
-              data?.dividend_mode === 'fixed'
-                ? `每局 ¥${formatCents(data?.dividend_fixed_cents || 0)} 分红`
-                : `茶水分红 ${data?.dividend_rate_percent || 0}%`
-            }}
-          </span>
+          <div class="section-title">今日操作人</div>
+          <span class="muted small">按开局数排序</span>
           <div class="spacer"></div>
           <el-button link type="primary" @click="router.push({ name: 'summary' })">
-            操作人汇总
+            查看汇总
           </el-button>
         </div>
-        <div class="mini-grid">
-          <div class="mini"><span>局数</span><b>{{ data?.today.session_count || 0 }}</b></div>
-          <div class="mini"><span>人次</span><b>{{ data?.today.player_times || 0 }}</b></div>
-          <div class="mini"><span>茶水</span><b>¥{{ formatCents(data?.today.tea_cents || 0) }}</b></div>
-          <div class="mini"><span>分红</span><b>¥{{ formatCents(data?.today.dividend_cents || 0) }}</b></div>
+        <div v-if="operatorRanking.length" class="op-list">
+          <div class="op-head">
+            <span></span>
+            <span>操作人</span>
+            <span class="op-cell">局数</span>
+            <span class="op-cell">茶水</span>
+            <span class="op-cell">现金差额</span>
+          </div>
+          <div
+            v-for="(row, index) in operatorRanking"
+            :key="row.user?.id || index"
+            class="op-row"
+          >
+            <span class="op-rank">{{ index + 1 }}</span>
+            <span class="op-name">{{ row.user?.display_name || row.user?.username || '未知' }}</span>
+            <span class="op-cell">{{ row.session_count }}</span>
+            <span class="op-cell">¥{{ formatCents(row.tea_cents) }}</span>
+            <span class="op-cell" :class="row.cash_diff_cents < 0 ? 'diff-out' : 'diff-in'">
+              {{ row.cash_diff_cents < 0 ? '应补' : '应交' }}
+              ¥{{ formatCents(Math.abs(row.cash_diff_cents)) }}
+            </span>
+          </div>
         </div>
-        <div class="mini-grid">
-          <div class="mini"><span>收押金</span><b>¥{{ formatCents(data?.today.add_deposit_cents || 0) }}</b></div>
-          <div class="mini"><span>退押金</span><b>¥{{ formatCents(data?.today.refund_cents || 0) }}</b></div>
-          <div class="mini"><span>差额</span><b>¥{{ formatCents(data?.today.cash_diff_cents || 0) }}</b></div>
-          <div class="mini"><span>押金余额</span><b>¥{{ formatCents(data?.total_deposit_cents || 0) }}</b></div>
-        </div>
-        <div class="empty-inline">
-          差额 = 收押金 − 退押金：正数是店员该交给店长的现金，负数是店长该补给店员的。
-        </div>
+        <div v-else class="empty-inline">今天还没有人开局</div>
       </div>
 
       <div class="panel block">
-        <div class="section-title">待处理</div>
-        <div class="todo-list">
-          <div class="todo-item" :class="{ alert: (data?.low_deposit_count || 0) > 0 }">
+        <div class="section-head">
+          <div class="section-title">待处理</div>
+          <span class="muted small">需要店员行动的事项</span>
+        </div>
+        <div v-if="(data?.low_deposit_count || 0) > 0" class="todo-list">
+          <div class="todo-item alert">
             <div>
               <b>{{ data?.low_deposit_count || 0 }} 个玩家押金不足</b>
-              <span class="muted">低于 ¥{{ formatCents(data?.deposit_low_cents || 3000) }}</span>
+              <span class="muted">
+                低于 ¥{{ formatCents(data?.deposit_low_cents || 3000) }}，建议提醒补押金
+              </span>
             </div>
             <el-button link type="primary" @click="goPlayers">去处理</el-button>
           </div>
-          <div class="todo-item">
-            <div>
-              <b>今日收押金 ¥{{ formatCents(data?.today.add_deposit_cents || 0) }}</b>
-              <span class="muted">退押金 ¥{{ formatCents(data?.today.refund_cents || 0) }}</span>
-            </div>
-            <el-button link type="primary" @click="goPlayers">记一笔</el-button>
-          </div>
-          <div class="todo-item">
-            <div>
-              <b>今日已开 {{ data?.today.session_count || 0 }} 局</b>
-              <span class="muted">
-                茶水 ¥{{ formatCents(data?.today.tea_cents || 0) }}，分红
-                ¥{{ formatCents(data?.today.dividend_cents || 0) }}
-              </span>
-            </div>
-            <el-button link type="primary" @click="router.push({ name: 'summary' })">去对账</el-button>
-          </div>
         </div>
+        <div v-else class="empty-inline">暂无待处理事项</div>
         <div class="quick-actions">
           <el-button :icon="Upload" @click="router.push({ name: 'players', query: { import: '1' } })">
             批量导入玩家
@@ -190,19 +199,18 @@
         <div v-if="!loading && !data?.recent_records?.length" class="empty-hint">还没有流水</div>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
 import { Refresh, TrendCharts, Upload, VideoPlay, Wallet } from '@element-plus/icons-vue'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { overviewApi } from '@/api'
 import type { OverviewPayload } from '@/api/types'
 import MoneyText from '@/components/common/MoneyText.vue'
-import StatCard from '@/components/common/StatCard.vue'
-import StatusTag from '@/components/common/StatusTag.vue'
 import { useAppStore } from '@/stores/app'
 import { formatShort } from '@/utils/datetime'
 import { formatCents } from '@/utils/money'
@@ -210,7 +218,9 @@ import { formatCents } from '@/utils/money'
 const router = useRouter()
 const app = useAppStore()
 const data = ref<OverviewPayload | null>(null)
-const loading = ref(false)
+const loading = ref(true)
+const error = ref(false)
+let loadSeq = 0
 
 function openSession() {
   router.push({ name: 'summary', query: { new: '1' } })
@@ -220,13 +230,32 @@ function goPlayers() {
   router.push({ name: 'players' })
 }
 
+const operatorRanking = computed(() =>
+  (data.value?.today_operators || [])
+    .filter((row) => row.session_count > 0)
+    .sort((a, b) => {
+      if (b.session_count !== a.session_count) return b.session_count - a.session_count
+      if (b.tea_cents !== a.tea_cents) return b.tea_cents - a.tea_cents
+      const left = a.user?.display_name || a.user?.username || ''
+      const right = b.user?.display_name || b.user?.username || ''
+      return left.localeCompare(right)
+    }),
+)
+
 async function load() {
+  const seq = ++loadSeq
   loading.value = true
+  error.value = false
   try {
-    data.value = await overviewApi.get()
+    const payload = await overviewApi.get()
+    if (seq !== loadSeq) return
+    data.value = payload
     void app.refreshToday()
+  } catch {
+    if (seq !== loadSeq) return
+    error.value = true
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
@@ -308,34 +337,58 @@ onMounted(load)
 }
 
 .op-list {
-  margin-top: 12px;
-  border-top: 1px solid var(--app-border);
-  padding-top: 8px;
+  margin-top: 4px;
+}
+
+.op-head,
+.op-row {
+  display: grid;
+  grid-template-columns: 24px minmax(80px, 1fr) 48px 76px 112px;
+  align-items: center;
+  gap: 8px;
 }
 
 .op-head {
+  padding: 0 0 6px;
+  border-bottom: 1px solid var(--app-border);
   font-size: 11.5px;
   color: var(--el-text-color-secondary);
-  margin-bottom: 6px;
 }
 
 .op-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 0;
+  padding: 7px 0;
   font-size: 12.5px;
 }
 
-.op-name {
-  min-width: 80px;
-  font-weight: 600;
+.op-row + .op-row {
+  border-top: 1px solid var(--app-border);
 }
 
-.op-row .div {
-  margin-left: auto;
-  color: var(--el-color-warning);
+.op-rank {
+  color: var(--app-text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+.op-name {
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.op-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.diff-out {
+  color: var(--el-color-danger);
+}
+
+.diff-in {
+  color: var(--el-color-success);
 }
 
 .small {
@@ -401,59 +454,64 @@ onMounted(load)
 
 .hero {
   display: flex;
-  align-items: center;
-  gap: 24px;
+  flex-direction: column;
+  gap: 16px;
   padding: 20px 22px;
   margin-bottom: 12px;
   background: linear-gradient(135deg, var(--app-bg-panel), var(--app-bg-subtle));
 }
 
-.hero-main {
-  flex: 1;
-  min-width: 0;
-}
-
-.hero-top {
+.hero-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  justify-content: space-between;
+  gap: 16px;
 }
 
-.hero-cash {
-  display: flex;
-  align-items: baseline;
+.hero-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.hero-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
-.hero-label {
-  font-size: 12.5px;
-  color: var(--app-text-muted);
-}
-
-.hero-cash b {
-  font-size: 30px;
-  letter-spacing: -0.5px;
-  font-variant-numeric: tabular-nums;
-  color: var(--el-text-color-primary);
-}
-
-.hero-meta {
+.hero-stat {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 6px;
-  font-size: 12.5px;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-bg-subtle);
+}
+
+.hero-stat > span {
+  font-size: 12px;
   color: var(--app-text-muted);
 }
 
-.hero-meta b {
-  color: var(--el-text-color-regular);
+.hero-stat b {
+  font-size: 24px;
+  letter-spacing: -0.3px;
+  font-variant-numeric: tabular-nums;
 }
 
-.hero-meta .sep {
-  color: var(--app-border-strong);
+.hero-stat small {
+  font-size: 11.5px;
+  color: var(--app-text-muted);
+}
+
+.hero-stat.clickable {
+  cursor: pointer;
+}
+
+.hero-stat.alert {
+  background: var(--app-warning-soft);
+  border-color: rgba(230, 162, 60, 0.28);
 }
 
 .hero-actions {
@@ -461,13 +519,6 @@ onMounted(load)
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
-}
-
-.metric-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 12px;
 }
 
 .work-grid {
@@ -540,30 +591,64 @@ onMounted(load)
 
 @media (max-width: 768px) {
   .hero {
-    flex-direction: column;
-    align-items: stretch;
     gap: 14px;
     padding: 16px;
   }
 
-  .hero-cash b {
-    font-size: 26px;
+  .hero-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .hero-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hero-stat b {
+    font-size: 20px;
   }
 
   .hero-actions {
     justify-content: flex-start;
   }
 
-  .metric-grid {
-    grid-template-columns: 1fr;
-  }
-
   .work-grid {
     grid-template-columns: 1fr;
   }
 
-  .mini-grid {
-    grid-template-columns: repeat(2, 1fr);
+  .op-head,
+  .op-row {
+    grid-template-columns: 22px minmax(72px, 1fr) 44px 96px;
+    gap: 6px;
+    font-size: 11.5px;
   }
+
+  .op-head span:nth-child(4),
+  .op-row .op-cell:nth-child(4) {
+    display: none;
+  }
+}
+.state-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 24px;
+}
+
+.state-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.state-desc {
+  font-size: 12.5px;
+}
+
+.state-loading {
+  min-height: 180px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
 }
 </style>

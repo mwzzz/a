@@ -13,8 +13,13 @@
         <span class="muted">划转押金给其他玩家</span>
       </div>
       <div class="balance">
-        <span class="muted">当前押金</span>
-        <DepositBadge :cents="player.deposit_cents" :level="player.deposit_level" />
+        <span class="muted">当前余额</span>
+        <DepositBadge
+          :cents="player.balance_cents"
+          :deposit-cents="player.deposit_cents"
+          :bonus-cents="player.bonus_cents"
+          :level="player.deposit_level"
+        />
       </div>
     </div>
 
@@ -35,7 +40,7 @@
     <div class="preview">
       <span v-if="error" class="error">{{ error }}</span>
       <span v-else-if="after !== null" :class="after < 0 ? 'error' : 'muted'">
-        划出后押金 ¥{{ formatCents(after) }}
+        划出后余额 {{ formatBalance(after, player?.bonus_cents || 0, afterDeposit || 0) }}
       </span>
     </div>
 
@@ -56,7 +61,7 @@ import { moneyApi } from '@/api'
 import type { PlayerRow } from '@/api/types'
 import DepositBadge from '@/components/common/DepositBadge.vue'
 import PlayerSelect from '@/components/common/PlayerSelect.vue'
-import { formatCents, parseYuan } from '@/utils/money'
+import { formatBalance, formatCents, parseYuan } from '@/utils/money'
 
 const props = defineProps<{
   modelValue: boolean
@@ -77,6 +82,10 @@ const saving = ref(false)
 const parsed = computed(() => parseYuan(amount.value))
 const after = computed(() => {
   if (parsed.value === null || !props.player) return null
+  return props.player.balance_cents - parsed.value
+})
+const afterDeposit = computed(() => {
+  if (parsed.value === null || !props.player) return null
   return props.player.deposit_cents - parsed.value
 })
 
@@ -84,6 +93,13 @@ const error = computed(() => {
   if (!amount.value.trim()) return ''
   if (parsed.value === null) return '金额格式不正确，最多两位小数'
   if (parsed.value <= 0) return '划转金额必须大于 0'
+  if (
+    props.player &&
+    props.player.bonus_cents > 0 &&
+    parsed.value > props.player.deposit_cents
+  ) {
+    return `赠金不能划转，最多可划现金押金 ¥${formatCents(props.player.deposit_cents)}`
+  }
   return ''
 })
 

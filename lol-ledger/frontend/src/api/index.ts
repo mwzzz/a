@@ -9,6 +9,8 @@ import type {
   LedgerEntryRow,
   MerchantPurgePreview,
   MerchantPurgeResult,
+  OperatorCashSummary,
+  OperatorOption,
   OperatorSummary,
   OverviewPayload,
   Paged,
@@ -20,6 +22,7 @@ import type {
   PlayerOption,
   PlayerRow,
   PreviewPayload,
+  RechargeCampaign,
   ReconcilePayload,
   SessionRow,
   SettingsPayload,
@@ -34,6 +37,19 @@ import type {
 } from './types'
 
 type Query = Record<string, string | number | boolean | undefined | null>
+
+function filenameFromDisposition(value: unknown): string {
+  const text = typeof value === 'string' ? value : ''
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(text)?.[1]
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded)
+    } catch {
+      return encoded
+    }
+  }
+  return /filename="?([^";]+)"?/i.exec(text)?.[1] || ''
+}
 
 export const authApi = {
   login: (username: string, password: string) =>
@@ -65,12 +81,26 @@ export const playerApi = {
       .post('/players/import', form)
       .then((res) => res.data as PlayerImportResult)
   },
+  exportFile: () =>
+    http.get('/players/export', { responseType: 'blob' }).then((res) => ({
+      blob: res.data as Blob,
+      filename: filenameFromDisposition(res.headers['content-disposition']) || '玩家库.xlsx',
+    })),
 }
 
 export const moneyApi = {
   addDeposit: (id: number, amount_cents: number, note = '') =>
     http
       .post(`/players/${id}/deposits`, { amount_cents, note })
+      .then((res) => res.data as {
+        entry: LedgerEntryRow
+        bonus_entry: LedgerEntryRow | null
+        campaign: RechargeCampaign | null
+        player: PlayerRow
+      }),
+  addBonus: (id: number, amount_cents: number, note = '') =>
+    http
+      .post(`/players/${id}/bonus`, { amount_cents, note })
       .then((res) => res.data as { entry: LedgerEntryRow; player: PlayerRow }),
   refund: (id: number, amount_cents: number, note = '') =>
     http
@@ -78,6 +108,20 @@ export const moneyApi = {
       .then((res) => res.data as { entry: LedgerEntryRow; player: PlayerRow }),
   transfer: (from_player_id: number, to_player_id: number, amount_cents: number, note = '') =>
     http.post('/transfers', { from_player_id, to_player_id, amount_cents, note }).then((res) => res.data),
+}
+
+export const campaignApi = {
+  list: () =>
+    http.get('/settings/recharge-campaigns').then((res) => res.data as RechargeCampaign[]),
+  create: (payload: { threshold_cents: number; bonus_cents: number }) =>
+    http
+      .post('/settings/recharge-campaigns', payload)
+      .then((res) => res.data as RechargeCampaign),
+  update: (id: number, payload: { threshold_cents: number; bonus_cents: number }) =>
+    http
+      .patch(`/settings/recharge-campaigns/${id}`, payload)
+      .then((res) => res.data as RechargeCampaign),
+  remove: (id: number) => http.delete(`/settings/recharge-campaigns/${id}`),
 }
 
 export const summaryApi = {
@@ -104,6 +148,12 @@ export const recordApi = {
     http.get('/records/deposits', { params }).then((res) => res.data as Paged<LedgerEntryRow>),
   sessions: (params: Query) =>
     http.get('/records/sessions', { params }).then((res) => res.data as Paged<SessionRow>),
+  operators: () =>
+    http.get('/records/operators').then((res) => res.data as OperatorOption[]),
+  operatorSummary: (params: { operator_id: number; date_from?: string; date_to?: string }) =>
+    http
+      .get('/records/operator-summary', { params })
+      .then((res) => res.data as OperatorCashSummary),
 }
 
 export const dividendApi = {

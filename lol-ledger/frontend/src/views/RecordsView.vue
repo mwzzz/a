@@ -33,14 +33,42 @@
         <el-option label="全部原因" value="" />
         <el-option label="正常扣押" value="normal_deduct" />
         <el-option label="加押金" value="add_deposit" />
+        <el-option label="加赠金" value="add_bonus" />
         <el-option label="退押金" value="refund" />
         <el-option label="划押转出" value="transfer_out" />
         <el-option label="划押转入" value="transfer_in" />
       </el-select>
 
+      <el-select
+        v-model="operatorId"
+        placeholder="全部操作人"
+        clearable
+        style="width: 160px"
+        @change="reload"
+      >
+        <el-option v-for="op in operators" :key="op.id" :label="op.display_name" :value="op.id">
+          {{ op.display_name }}
+          <span class="muted small">
+            {{ op.username }}{{ op.is_active ? '' : '（已停用）' }}
+          </span>
+        </el-option>
+      </el-select>
+
       <el-button :icon="Refresh" @click="reload">刷新</el-button>
       <div class="spacer"></div>
       <span class="muted small">共 {{ total }} 条</span>
+    </div>
+
+    <div v-if="tab === 'deposits' && operatorId && cashSummary" class="cash-summary">
+      <span>操作人：<b>{{ cashSummary.operator?.display_name || '-' }}</b></span>
+      <span>收押金 <b>¥{{ formatCents(cashSummary.add_deposit_cents) }}</b></span>
+      <span>退押金 <b>¥{{ formatCents(cashSummary.refund_cents) }}</b></span>
+      <span :class="cashSummary.cash_diff_cents < 0 ? 'diff-out' : 'diff-in'">
+        差额 <b>¥{{ formatCents(cashSummary.cash_diff_cents) }}</b>
+      </span>
+      <span class="muted small">
+        {{ cashSummary.cash_diff_cents < 0 ? '店长应补' : '店员应交' }}，按当前时间范围统计
+      </span>
     </div>
 
     <el-tabs v-model="tab" @tab-change="onTabChange">
@@ -62,9 +90,12 @@
                 <MoneyText :cents="row.signed_amount_cents" change />
               </template>
             </el-table-column>
-            <el-table-column label="变动后余额" width="120" align="right">
+            <el-table-column label="变动后余额" width="140" align="right">
               <template #default="{ row }">
                 <span class="mono muted">¥{{ formatCents(row.balance_after_cents) }}</span>
+                <div v-if="row.bonus_after_cents > 0" class="cell-sub">
+                  赠金 ¥{{ formatCents(row.bonus_after_cents) }}
+                </div>
               </template>
             </el-table-column>
             <el-table-column label="操作人" width="96">
@@ -76,6 +107,9 @@
               <template #default="{ row }">
                 <div class="cell-main">{{ row.reason_label }}</div>
                 <div v-if="row.note" class="cell-sub">{{ row.note }}</div>
+                <div v-if="row.bonus_amount_cents > 0" class="cell-sub">
+                  其中赠金抵扣 ¥{{ formatCents(row.bonus_amount_cents) }}
+                </div>
               </template>
             </el-table-column>
             <el-table-column label="场次" min-width="150">
@@ -97,10 +131,16 @@
               <div class="cell-sub">
                 {{ row.reason_label }}
                 <template v-if="row.note"> · {{ row.note }}</template>
+                <template v-if="row.bonus_amount_cents > 0">
+                  · 赠金抵扣 ¥{{ formatCents(row.bonus_amount_cents) }}
+                </template>
               </div>
               <div class="record-card-meta">
                 <span>{{ formatFull(row.created_at) }}</span>
                 <span class="mono">余额 ¥{{ formatCents(row.balance_after_cents) }}</span>
+                <span v-if="row.bonus_after_cents > 0">
+                  赠金 ¥{{ formatCents(row.bonus_after_cents) }}
+                </span>
                 <span>{{ row.operator?.display_name || '-' }}</span>
                 <span v-if="row.session">{{ row.session.name }}</span>
               </div>
@@ -194,7 +234,7 @@ import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { recordApi } from '@/api'
-import type { LedgerEntryRow, SessionRow } from '@/api/types'
+import type { LedgerEntryRow, OperatorCashSummary, OperatorOption, SessionRow } from '@/api/types'
 import MoneyText from '@/components/common/MoneyText.vue'
 import { formatFull, formatShort, momentShortcuts } from '@/utils/datetime'
 import { formatCents } from '@/utils/money'
@@ -208,12 +248,39 @@ const tab = ref<'deposits' | 'sessions'>('deposits')
 const keyword = ref('')
 const dateRange = ref<[string, string] | null>(null)
 const reason = ref('')
+const operatorId = ref<number | ''>('')
+const operators = ref<OperatorOption[]>([])
+const cashSummary = ref<OperatorCashSummary | null>(null)
 const entries = ref<LedgerEntryRow[]>([])
 const sessions = ref<SessionRow[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 const loading = ref(false)
+
+async function loadOperators() {
+  try {
+    operators.value = await recordApi.operators()
+  } catch {
+    operators.value = []
+  }
+}
+
+async function loadCashSummary() {
+  if (!operatorId.value) {
+    cashSummary.value = null
+    return
+  }
+  try {
+    cashSummary.value = await recordApi.operatorSummary({
+      operator_id: operatorId.value,
+      date_from: dateRange.value?.[0],
+      date_to: dateRange.value?.[1],
+    })
+  } catch {
+    cashSummary.value = null
+  }
+}
 
 async function load() {
   loading.value = true
@@ -222,6 +289,7 @@ async function load() {
       keyword: keyword.value.trim(),
       date_from: dateRange.value?.[0],
       date_to: dateRange.value?.[1],
+      operator_id: operatorId.value || undefined,
       page: page.value,
       page_size: pageSize.value,
     }
@@ -229,10 +297,12 @@ async function load() {
       const data = await recordApi.deposits({ ...common, reason: reason.value || undefined })
       entries.value = data.items
       total.value = data.total
+      await loadCashSummary()
     } else {
       const data = await recordApi.sessions(common)
       sessions.value = data.items
       total.value = data.total
+      cashSummary.value = null
     }
   } finally {
     loading.value = false
@@ -260,6 +330,7 @@ watch(
 
 onMounted(() => {
   if (typeof route.query.keyword === 'string') keyword.value = route.query.keyword
+  void loadOperators()
   load()
 })
 </script>
@@ -267,6 +338,31 @@ onMounted(() => {
 <style scoped>
 .small {
   font-size: 12px;
+}
+
+.cash-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 18px;
+  margin-bottom: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+  background: var(--app-bg-panel);
+  font-size: 12.5px;
+}
+
+.cash-summary b {
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-in {
+  color: var(--el-color-success);
+}
+
+.diff-out {
+  color: var(--el-color-warning);
 }
 
 .panel {

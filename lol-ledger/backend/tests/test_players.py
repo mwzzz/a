@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from io import BytesIO
+
+from openpyxl import load_workbook
 from sqlalchemy import text
 
 from app import db as dbmod
@@ -129,7 +132,7 @@ def test_delete_requires_zero_deposit(client, admin_headers) -> None:
     add_money(client, admin_headers, player["id"], 100)
     blocked = client.delete(f"/api/v1/players/{player['id']}", headers=admin_headers)
     assert blocked.status_code == 400
-    assert "押金不为 0" in blocked.json()["detail"]
+    assert "押金或赠金不为 0" in blocked.json()["detail"]
 
     response = client.post(
         f"/api/v1/players/{player['id']}/refunds",
@@ -208,3 +211,59 @@ def test_default_sort_is_deposit_asc(client, admin_headers) -> None:
     balances = [item["deposit_cents"] for item in items]
     assert balances == sorted(balances)
     assert items[0]["game_id"] == "欠费哥"
+
+
+def test_blacklist_flag_create_filter_and_update(client, admin_headers, staff_headers) -> None:
+    blocked = new_player(client, admin_headers, "黑名单甲", is_blacklisted=True)
+    normal = new_player(client, admin_headers, "正常乙")
+    assert blocked["is_blacklisted"] is True
+    assert normal["is_blacklisted"] is False
+
+    only_blocked = client.get(
+        "/api/v1/players", params={"blacklisted": "true"}, headers=admin_headers
+    ).json()["items"]
+    assert [item["id"] for item in only_blocked] == [blocked["id"]]
+
+    only_normal = client.get(
+        "/api/v1/players", params={"blacklisted": "false"}, headers=admin_headers
+    ).json()["items"]
+    assert [item["id"] for item in only_normal] == [normal["id"]]
+
+    updated = client.patch(
+        f"/api/v1/players/{blocked['id']}",
+        json={"is_blacklisted": False},
+        headers=staff_headers,
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["is_blacklisted"] is False
+
+
+def test_export_players_xlsx(client, admin_headers, admin_b_headers) -> None:
+    paid = new_player(client, admin_headers, "导出甲")
+    zero = new_player(client, admin_headers, "导出乙")
+    removed = new_player(client, admin_headers, "导出丙")
+    add_money(client, admin_headers, paid["id"], 12345)
+    assert (
+        client.delete(f"/api/v1/players/{removed['id']}", headers=admin_headers).status_code
+        == 204
+    )
+    new_player(client, admin_b_headers, "别家玩家")
+
+    assert client.get("/api/v1/players/export").status_code == 401
+
+    response = client.get("/api/v1/players/export", headers=admin_headers)
+    assert response.status_code == 200, response.text
+    assert "spreadsheetml" in response.headers["content-type"]
+    assert ".xlsx" in response.headers["content-disposition"]
+
+    book = load_workbook(BytesIO(response.content))
+    sheet = book.active
+    rows = list(sheet.iter_rows(values_only=True))
+    assert rows[0] == ("游戏名", "押金(元)")
+
+    values = {row[0]: row[1] for row in rows[1:]}
+    assert set(values) == {"导出甲", "导出乙"}
+    assert round(values["导出甲"], 2) == 123.45
+    assert values["导出乙"] == 0
+    assert "导出丙" not in values
+    assert "别家玩家" not in values

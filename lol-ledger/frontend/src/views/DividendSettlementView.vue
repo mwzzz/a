@@ -230,7 +230,7 @@
         maxlength="200"
         placeholder="备注，比如「微信已转」"
       />
-      <div class="settle-tip">结算后这些班次不能再重复结算，请确认金额后再操作。</div>
+      <div class="settle-tip">结算后该区间场次不能重复结算，请确认金额后再操作。</div>
       <template #footer>
         <el-button @click="settleVisible = false">取消</el-button>
         <el-button type="primary" :loading="settling" @click="submitSettle">确认结算</el-button>
@@ -322,7 +322,7 @@ function isSelectable(row: DividendPreviewItem): boolean {
   return row.pending.dividend_cents > 0
 }
 
-/** 分红口径提示：同一个区间可能既有关班时按比例的班次，也有按局固定的班次 */
+/** 分红口径提示：同一个区间可能既有按茶水比例的场次，也有按局固定的场次 */
 function modeLabel(mode: DividendPreviewItem['dividend_mode']): string {
   if (mode === 'fixed') return '按每局固定'
   if (mode === 'percent') return '按茶水比例'

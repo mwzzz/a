@@ -59,6 +59,7 @@ def create_player(
     nickname: str = "",
     account: str = "",
     remark: str = "",
+    is_blacklisted: bool = False,
     ip: str = "",
 ) -> Player:
     merchant_id = actor.merchant_id
@@ -78,8 +79,9 @@ def create_player(
         merchant_id=merchant_id,
         game_id=name,
         nickname=clean_text(nickname, "昵称"),
-        account=clean_text(account, "账号"),
+        account=clean_text(account, "段位"),
         remark=clean_text(remark, "备注", 200),
+        is_blacklisted=bool(is_blacklisted),
         deposit_cents=0,
         games_played=0,
         creator_id=actor.id,
@@ -111,6 +113,7 @@ def update_player(
     nickname: str | None = None,
     account: str | None = None,
     remark: str | None = None,
+    is_blacklisted: bool | None = None,
     ip: str = "",
 ) -> Player:
     merchant_id = actor.merchant_id
@@ -133,9 +136,11 @@ def update_player(
     if nickname is not None:
         player.nickname = clean_text(nickname, "昵称")
     if account is not None:
-        player.account = clean_text(account, "账号")
+        player.account = clean_text(account, "段位")
     if remark is not None:
         player.remark = clean_text(remark, "备注", 200)
+    if is_blacklisted is not None:
+        player.is_blacklisted = bool(is_blacklisted)
 
     player.updated_at = now_text()
     write_audit(
@@ -161,8 +166,8 @@ def soft_delete_player(
     if not actor.is_admin:
         raise ForbiddenError("只有管理员可以删除玩家")
     player = get_player(session, player_id, actor.merchant_id)
-    if int(player.deposit_cents) != 0:
-        raise AppError("押金不为 0，不能删除")
+    if int(player.deposit_cents) != 0 or int(player.bonus_cents) != 0:
+        raise AppError("押金或赠金不为 0，不能删除")
     player.deleted_at = now_text()
     player.updated_at = player.deleted_at
     write_audit(
@@ -183,11 +188,14 @@ def _filters(
     merchant_id: int,
     low: int,
     high: int,
+    blacklisted: bool | None = None,
 ):
     conditions = [
         Player.merchant_id == merchant_id,
         Player.deleted_at.is_(None),
     ]
+    if blacklisted is not None:
+        conditions.append(Player.is_blacklisted.is_(bool(blacklisted)))
     text = (keyword or "").strip()
     if text:
         like = f"%{text}%"
@@ -200,12 +208,12 @@ def _filters(
             )
         )
     if level == "low":
-        conditions.append(Player.deposit_cents < low)
+        conditions.append(Player.deposit_cents + Player.bonus_cents < low)
     elif level == "warn":
-        conditions.append(Player.deposit_cents >= low)
-        conditions.append(Player.deposit_cents <= high)
+        conditions.append(Player.deposit_cents + Player.bonus_cents >= low)
+        conditions.append(Player.deposit_cents + Player.bonus_cents <= high)
     elif level == "safe":
-        conditions.append(Player.deposit_cents > high)
+        conditions.append(Player.deposit_cents + Player.bonus_cents > high)
     return conditions
 
 
@@ -216,6 +224,7 @@ def list_players(
     keyword: str = "",
     level: str | None = None,
     sort: str = "deposit_asc",
+    blacklisted: bool | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> dict:
@@ -225,7 +234,7 @@ def list_players(
     page = max(1, int(page))
     page_size = min(200, max(1, int(page_size)))
 
-    conditions = _filters(keyword, level, merchant_id, low, high)
+    conditions = _filters(keyword, level, merchant_id, low, high, blacklisted)
     total = int(
         session.scalar(select(func.count()).select_from(Player).where(*conditions)) or 0
     )
@@ -243,9 +252,13 @@ def list_players(
     )
 
     if sort == "deposit_desc":
-        stmt = stmt.order_by(Player.deposit_cents.desc(), Player.game_id.asc())
+        stmt = stmt.order_by(
+            (Player.deposit_cents + Player.bonus_cents).desc(), Player.game_id.asc()
+        )
     elif sort == "deposit_asc":
-        stmt = stmt.order_by(Player.deposit_cents.asc(), Player.game_id.asc())
+        stmt = stmt.order_by(
+            (Player.deposit_cents + Player.bonus_cents).asc(), Player.game_id.asc()
+        )
     elif sort == "last_active_desc":
         stmt = stmt.order_by(last_active.desc(), Player.id.desc())
     elif sort == "game_id_asc":
@@ -317,12 +330,20 @@ def player_detail(session: Session, merchant_id: int, player_id: int) -> dict:
     total_out = sum(
         int(entry.amount_cents)
         for entry in entries
-        if entry.reason not in ("add_deposit", "transfer_in")
+        if entry.reason not in ("add_deposit", "transfer_in", "add_bonus")
+    )
+    bonus_in = sum(
+        int(entry.amount_cents) for entry in entries if entry.reason == "add_bonus"
+    )
+    bonus_used = sum(
+        int(entry.bonus_amount_cents) for entry in entries if entry.reason == "normal_deduct"
     )
     last_active = entries[0].created_at if entries else player.created_at
     data = player_row(player, low_cents=low, high_cents=high, last_active_at=last_active)
     data["total_in_cents"] = total_in
     data["total_out_cents"] = total_out
+    data["bonus_in_cents"] = bonus_in
+    data["bonus_used_cents"] = bonus_used
     data["entry_count"] = len(entries)
     return data
 

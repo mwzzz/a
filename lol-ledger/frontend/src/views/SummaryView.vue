@@ -1,5 +1,5 @@
 <template>
-  <div class="page summary-view">
+  <div v-loading="loading && loaded" element-loading-text="正在刷新…" class="page summary-view">
     <div class="page-head">
       <div>
         <h1>操作人汇总</h1>
@@ -26,11 +26,25 @@
           :style="{ width: '330px' }"
           @change="load"
         />
-        <el-button :icon="Refresh" @click="load">刷新</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
         <el-button type="primary" :icon="VideoPlay" @click="openSession">开一局</el-button>
       </div>
     </div>
 
+    <div v-if="error" class="panel state-panel">
+      <div class="state-title">数据暂不可用</div>
+      <div class="state-desc muted">操作人汇总没有加载成功，请检查网络或服务后重试。</div>
+      <el-button type="primary" :loading="loading" @click="load">重试</el-button>
+    </div>
+    <div
+      v-else-if="!loaded"
+      v-loading="true"
+      element-loading-text="正在加载汇总数据…"
+      class="panel state-panel state-loading"
+    >
+      <div class="state-title">正在加载汇总数据…</div>
+    </div>
+    <template v-else>
     <div class="totals">
       <div class="stat">
         <span>新增场次</span><b>{{ data.totals.session_count }}</b>
@@ -169,6 +183,7 @@
 
       <el-empty v-if="!sessions.length" description="还没有场次" :image-size="80" />
     </div>
+    </template>
 
     <NewSessionDialog
       v-model="sessionVisible"
@@ -222,12 +237,31 @@ const data = ref<OperatorSummary>({
 const sessions = ref<SessionRow[]>([])
 const defaultTeaCents = ref(200)
 const sessionVisible = ref(false)
+const loading = ref(false)
+const error = ref(false)
+const loaded = ref(false)
+let loadSeq = 0
 
 async function load() {
   const [from, to] = range.value || [day, day]
-  data.value = await summaryApi.operators(from, to)
-  const page = await sessionApi.list({ date_from: from, date_to: to, page: 1, page_size: 8 })
-  sessions.value = page.items
+  const seq = ++loadSeq
+  loading.value = true
+  error.value = false
+  try {
+    const [summary, page] = await Promise.all([
+      summaryApi.operators(from, to),
+      sessionApi.list({ date_from: from, date_to: to, page: 1, page_size: 8 }),
+    ])
+    if (seq !== loadSeq) return
+    data.value = summary
+    sessions.value = page.items
+    loaded.value = true
+  } catch {
+    if (seq !== loadSeq) return
+    error.value = true
+  } finally {
+    if (seq === loadSeq) loading.value = false
+  }
 }
 
 function openSession() {
@@ -239,8 +273,12 @@ async function onSessionCreated() {
 }
 
 onMounted(async () => {
-  const settings = await settingsApi.get()
-  defaultTeaCents.value = settings.last_tea_cents
+  try {
+    const settings = await settingsApi.get()
+    defaultTeaCents.value = settings.last_tea_cents
+  } catch {
+    // 设置读取失败不阻断汇总，茶水沿用本地默认值
+  }
   await load()
   if (route.query.new) openSession()
 })
@@ -371,5 +409,28 @@ watch(
   .head-actions .el-date-editor {
     flex: 1 1 100%;
   }
+}
+.state-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 24px;
+}
+
+.state-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.state-desc {
+  font-size: 12.5px;
+}
+
+.state-loading {
+  min-height: 180px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
 }
 </style>

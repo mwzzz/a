@@ -216,6 +216,7 @@ def import_players(
                 player_id,
                 item["deposit_cents"],
                 note="Excel 批量导入",
+                apply_campaign=False,
             )
             deposited_cents += item["deposit_cents"]
 

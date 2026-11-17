@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -9,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.deps import Actor, client_ip, get_current_user, get_read_db, get_write_db, require_admin
 from app.schemas import PlayerCreateIn, PlayerUpdateIn
 from app.serializers import player_row
+from app.services import exports as export_service
 from app.services import imports as import_service
 from app.services import options
 from app.services import players as player_service
@@ -32,6 +35,7 @@ def list_players(
     keyword: str = "",
     level: str | None = None,
     sort: str = "deposit_asc",
+    blacklisted: bool | None = None,
     page: int = 1,
     page_size: int = 20,
     actor: Actor = Depends(get_current_user),
@@ -43,6 +47,7 @@ def list_players(
         keyword=keyword,
         level=level,
         sort=sort,
+        blacklisted=blacklisted,
         page=page,
         page_size=page_size,
     )
@@ -88,6 +93,25 @@ def import_players(
         )
 
 
+@router.get("/export")
+def export_players(
+    actor: Actor = Depends(get_current_user),
+    session: Session = Depends(get_read_db),
+) -> Response:
+    content, filename = export_service.build_players_xlsx(
+        session, actor.merchant_id, actor.merchant_name
+    )
+    disposition = (
+        'attachment; filename="players.xlsx"; '
+        f"filename*=UTF-8''{quote(filename)}"
+    )
+    return Response(
+        content=content,
+        media_type=export_service.XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": disposition},
+    )
+
+
 @router.get("/{player_id}")
 def get_player(
     player_id: int,
@@ -124,6 +148,7 @@ def create_player(
         nickname=payload.nickname,
         account=payload.account,
         remark=payload.remark,
+        is_blacklisted=payload.is_blacklisted,
         ip=client_ip(request),
     )
     low, high = options.thresholds(session, actor.merchant_id)
@@ -146,6 +171,7 @@ def update_player(
         nickname=payload.nickname,
         account=payload.account,
         remark=payload.remark,
+        is_blacklisted=payload.is_blacklisted,
         ip=client_ip(request),
     )
     low, high = options.thresholds(session, actor.merchant_id)

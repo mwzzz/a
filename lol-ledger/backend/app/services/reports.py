@@ -23,6 +23,15 @@ def overview(session: Session, merchant_id: int) -> dict:
         )
         or 0
     )
+    total_bonus = int(
+        session.scalar(
+            select(func.coalesce(func.sum(Player.bonus_cents), 0)).where(
+                Player.merchant_id == merchant_id,
+                Player.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
     player_count = int(
         session.scalar(
             select(func.count())
@@ -41,7 +50,7 @@ def overview(session: Session, merchant_id: int) -> dict:
             .where(
                 Player.merchant_id == merchant_id,
                 Player.deleted_at.is_(None),
-                Player.deposit_cents < low,
+                (Player.deposit_cents + Player.bonus_cents) < low,
             )
         )
         or 0
@@ -53,6 +62,7 @@ def overview(session: Session, merchant_id: int) -> dict:
     return {
         "date": today["date_from"],
         "total_deposit_cents": total_deposit,
+        "total_bonus_cents": total_bonus,
         "player_count": player_count,
         "low_deposit_count": low_count,
         "deposit_low_cents": low,
@@ -61,5 +71,6 @@ def overview(session: Session, merchant_id: int) -> dict:
         "dividend_rate_percent": options.dividend_rate(session, merchant_id),
         "dividend_fixed_cents": options.dividend_fixed_cents(session, merchant_id),
         "today": today["totals"],
+        "today_operators": today["rows"],
         "recent_records": recent["items"],
     }

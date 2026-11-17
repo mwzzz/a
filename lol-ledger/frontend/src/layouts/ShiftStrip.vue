@@ -2,7 +2,15 @@
   <div v-if="!auth.isSuperadmin" class="shift-strip">
     <div class="shift-left">
       <span class="pulse"></span>
-      <template v-if="app.today">
+      <template v-if="app.todayError">
+        <b class="strip-error">今日数据暂不可用</b>
+        <span class="muted">请检查网络或服务</span>
+        <el-button link type="primary" size="small" @click="app.refreshToday()">重试</el-button>
+      </template>
+      <template v-else-if="app.todayLoading && !app.today">
+        <span class="muted">加载中…</span>
+      </template>
+      <template v-else-if="app.today">
         <b>今日</b>
         <span>{{ app.today.session_count }} 局</span>
         <span class="sep">·</span>
@@ -74,6 +82,10 @@ function openSession() {
 .cash {
   color: var(--el-color-success);
   font-variant-numeric: tabular-nums;
+}
+
+.strip-error {
+  color: var(--el-color-danger);
 }
 
 .sep {

@@ -7,33 +7,12 @@
     :close-on-click-modal="false"
     @update:model-value="close"
   >
-    <div class="grid">
-      <div class="field">
-        <label>场次名称</label>
-        <el-input v-model="name" placeholder="留空自动生成，如 10月31日 第1局" maxlength="64" />
-      </div>
-      <div class="field">
-        <label>场次时间</label>
-        <el-date-picker
-          v-model="playedAt"
-          type="datetime"
-          placeholder="默认现在"
-          style="width: 100%"
-        />
-      </div>
-      <div class="field">
-        <label>备注</label>
-        <el-input v-model="note" placeholder="可选" maxlength="200" />
-      </div>
-      <div class="field">
-        <label>每人茶水（元）</label>
-        <el-input v-model="teaYuan" placeholder="2.00" autocomplete="off">
-          <template #prefix>¥</template>
-        </el-input>
-      </div>
-    </div>
-
-    <AiPlayerRecognition :active="modelValue" @apply="applyAiPlayers" />
+    <AiPlayerRecognition
+      :active="modelValue"
+      :tea-free-keys="teaFreeKeys"
+      :tea-fee-cents="teaCents"
+      @apply="applyAiPlayers"
+    />
 
     <div class="players-head">
       <span class="section-title">参与玩家</span>
@@ -48,6 +27,7 @@
         <PlayerSelect
           v-model="slots[index]"
           :exclude-ids="otherSelected(index)"
+          :tea-free-keys="teaFreeKeys"
           :placeholder="slot ? '已选择' : '+ 添加'"
         />
         <el-button v-if="slot" link type="info" class="clear" @click="slots[index] = null">
@@ -57,21 +37,40 @@
     </div>
 
     <div class="add-row">
-      <PlayerSelect v-model="adding" :exclude-ids="selectedIds" placeholder="搜索并添加玩家" />
+      <PlayerSelect
+        v-model="adding"
+        :exclude-ids="selectedIds"
+        :tea-free-keys="teaFreeKeys"
+        placeholder="搜索并添加玩家"
+      />
     </div>
 
     <div class="summary">
       <span>已选 <b>{{ filledCount }}</b> 人</span>
       <span>茶水合计 <b>¥{{ formatCents(teaTotalCents) }}</b></span>
-      <span v-if="preview && preview.negative_count" class="danger">
-        有 {{ preview.negative_count }} 人会扣成负数：{{ preview.negative_players.join('、') }}
+      <span v-if="previewState === 'idle'" class="muted">选择玩家后自动校验押金</span>
+      <span v-else-if="previewState === 'loading'" class="muted">正在校验押金…</span>
+      <template v-else-if="previewState === 'error'">
+        <span class="danger">押金校验失败，校验通过前不能创建</span>
+        <el-button link type="primary" size="small" @click="retryPreview">重试</el-button>
+      </template>
+      <span v-else-if="previewState === 'negative'" class="danger">
+        有 {{ preview?.negative_count }} 人会扣成负数：{{ preview?.negative_players?.join('、') }}
       </span>
-      <span v-else-if="filledCount" class="muted">没有人的押金会被扣成负数</span>
+      <span v-else class="muted">没有人的押金会被扣成负数</span>
+      <span v-if="bonusDeductTotal > 0" class="muted">
+        其中赠金抵扣 ¥{{ formatCents(bonusDeductTotal) }}
+      </span>
+      <span v-if="lowDepositPlayers.length" class="warn">
+        押金不足 ¥{{ formatCents((teaCents || 0) * 11) }}（茶水×11）：{{ lowDepositPlayers.join('、') }}
+      </span>
     </div>
 
     <template #footer>
       <el-button @click="close">取消</el-button>
-      <el-button type="primary" :loading="saving" @click="submit">创建</el-button>
+      <el-button type="primary" :loading="saving" :disabled="!canCreate" @click="submit">
+        创建
+      </el-button>
     </template>
   </el-dialog>
 </template>
@@ -80,12 +79,12 @@
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 
-import { sessionApi } from '@/api'
+import { sessionApi, toolListApi } from '@/api'
 import type { PreviewPayload } from '@/api/types'
 import AiPlayerRecognition from '@/components/batches/AiPlayerRecognition.vue'
 import PlayerSelect from '@/components/common/PlayerSelect.vue'
-import { toIso } from '@/utils/datetime'
-import { formatCents, parseYuan } from '@/utils/money'
+import { formatCents } from '@/utils/money'
+import { nameKey } from '@/utils/names'
 
 const props = defineProps<{
   modelValue: boolean
@@ -97,24 +96,64 @@ const emit = defineEmits<{
   (event: 'created', value: Record<string, never>): void
 }>()
 
-const name = ref('')
-const note = ref('')
-const playedAt = ref<Date | null>(new Date())
-const teaYuan = ref('2.00')
+type PreviewState = 'idle' | 'loading' | 'error' | 'safe' | 'negative'
+
 const slots = ref<(number | null)[]>(Array(10).fill(null))
 const adding = ref<number | null>(null)
 const saving = ref(false)
 const preview = ref<PreviewPayload | null>(null)
+const previewLoading = ref(false)
+const previewError = ref(false)
+const teaFreeKeys = ref<string[]>([])
 
 const filledIds = computed(() => slots.value.filter((item): item is number => Boolean(item)))
 const filledCount = computed(() => filledIds.value.length)
 const selectedIds = computed(() => filledIds.value)
 
-const teaCents = computed(() => parseYuan(teaYuan.value))
-
-const teaTotalCents = computed(() =>
-  teaCents.value === null ? 0 : teaCents.value * filledCount.value,
+const teaCents = computed(() =>
+  Number.isFinite(props.defaultTeaCents) ? props.defaultTeaCents : 200,
 )
+
+const teaTotalCents = computed(() => teaCents.value * filledCount.value)
+
+const bonusDeductTotal = computed(
+  () =>
+    preview.value?.items.reduce((sum, item) => sum + item.bonus_deduct_cents, 0) || 0,
+)
+
+const lowDepositPlayers = computed(() => {
+  if (!preview.value || !teaCents.value) return []
+  const threshold = teaCents.value * 11
+  return preview.value.items
+    .filter((item) => item.before_cents < threshold)
+    .map((item) => item.game_id)
+})
+
+const previewState = computed<PreviewState>(() => {
+  if (!filledCount.value) return 'idle'
+  if (previewLoading.value) return 'loading'
+  if (previewError.value || !preview.value) return 'error'
+  return preview.value.negative_count > 0 ? 'negative' : 'safe'
+})
+
+const previewReady = computed(
+  () => previewState.value === 'safe' || previewState.value === 'negative',
+)
+const canCreate = computed(
+  () => filledCount.value > 0 && previewReady.value && !saving.value,
+)
+
+async function loadTeaFreePlayers() {
+  try {
+    const data = await toolListApi.list()
+    const list = data.lists.find((item) => item.name === '免茶水')
+    teaFreeKeys.value = (list?.items || [])
+      .map((item) => nameKey(item.content))
+      .filter(Boolean)
+  } catch {
+    teaFreeKeys.value = []
+  }
+}
 
 function otherSelected(index: number): number[] {
   return slots.value.filter((item, position) => Boolean(item) && position !== index) as number[]
@@ -139,7 +178,7 @@ async function applyAiPlayers(ids: number[]) {
     fresh.forEach((id, position) => {
       slots.value[emptySlots[position]] = id
     })
-    ElMessage.success(`已填入 ${fresh.length} 个玩家，请确认茶水`)
+    ElMessage.success(`已填入 ${fresh.length} 个玩家`)
     return
   }
 
@@ -156,20 +195,17 @@ async function applyAiPlayers(ids: number[]) {
   unique.forEach((id, position) => {
     slots.value[position] = id
   })
-  ElMessage.success(`已填入 ${unique.length} 个玩家，请确认茶水`)
+  ElMessage.success(`已填入 ${unique.length} 个玩家`)
 }
 
 watch(
   () => props.modelValue,
   (visible) => {
     if (!visible) return
-    name.value = ''
-    note.value = ''
-    playedAt.value = new Date()
-    teaYuan.value = formatCents(props.defaultTeaCents || 200)
+    resetPreviewState()
     slots.value = Array(10).fill(null)
     adding.value = null
-    preview.value = null
+    void loadTeaFreePlayers()
   },
 )
 
@@ -185,25 +221,56 @@ watch(adding, (value) => {
 })
 
 let previewTimer: number | undefined
+let previewSeq = 0
 
-function schedulePreview() {
+function resetPreviewState() {
+  previewSeq += 1
   window.clearTimeout(previewTimer)
-  if (!filledCount.value || teaCents.value === null) {
-    preview.value = null
-    return
-  }
-  previewTimer = window.setTimeout(async () => {
-    try {
-      preview.value = await sessionApi.preview(filledIds.value, teaCents.value as number)
-    } catch {
-      preview.value = null
-    }
-  }, 300)
+  preview.value = null
+  previewLoading.value = false
+  previewError.value = false
 }
 
-watch([() => filledIds.value.join(','), teaCents], schedulePreview)
+async function runPreview(seq: number) {
+  try {
+    const payload = await sessionApi.preview(filledIds.value, teaCents.value)
+    if (seq !== previewSeq) return
+    preview.value = payload
+  } catch {
+    if (seq !== previewSeq) return
+    preview.value = null
+    previewError.value = true
+  } finally {
+    if (seq === previewSeq) previewLoading.value = false
+  }
+}
+
+function schedulePreview(immediate = false) {
+  window.clearTimeout(previewTimer)
+  previewSeq += 1
+  const seq = previewSeq
+  preview.value = null
+  previewError.value = false
+  if (!filledCount.value) {
+    previewLoading.value = false
+    return
+  }
+  previewLoading.value = true
+  if (immediate) {
+    void runPreview(seq)
+  } else {
+    previewTimer = window.setTimeout(() => void runPreview(seq), 300)
+  }
+}
+
+function retryPreview() {
+  schedulePreview(true)
+}
+
+watch([() => filledIds.value.join(','), teaCents], () => schedulePreview())
 
 function close() {
+  resetPreviewState()
   emit('update:modelValue', false)
 }
 
@@ -212,8 +279,10 @@ async function submit() {
     ElMessage.warning('请至少选择 1 个玩家')
     return
   }
-  if (teaCents.value === null) {
-    ElMessage.warning('茶水金额格式不正确')
+  if (!previewReady.value) {
+    ElMessage.warning(
+      previewState.value === 'loading' ? '正在校验押金，请稍候' : '押金校验失败，请先重试',
+    )
     return
   }
   if (preview.value && preview.value.negative_count > 0) {
@@ -230,13 +299,13 @@ async function submit() {
 
   saving.value = true
   try {
-    await sessionApi.create({
-      name: name.value.trim(),
-      played_at: toIso(playedAt.value) || null,
-      note: note.value.trim(),
+    const created = await sessionApi.create({
       tea_fee_cents: teaCents.value,
       player_ids: filledIds.value,
     })
+    if (created.tea_free_removed?.length) {
+      ElMessage.info(`已自动去掉免茶水玩家：${created.tea_free_removed.join('、')}`)
+    }
     ElMessage.success('场次已创建')
     emit('created', {})
     close()
@@ -247,24 +316,6 @@ async function submit() {
 </script>
 
 <style scoped>
-.grid {
-  display: grid;
-  grid-template-columns: 1.4fr 1fr;
-  gap: 12px 16px;
-  margin-bottom: 14px;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.field label {
-  font-size: 12.5px;
-  color: var(--el-text-color-secondary);
-}
-
 .players-head {
   display: flex;
   align-items: baseline;
@@ -341,6 +392,10 @@ async function submit() {
 
 .danger {
   color: var(--el-color-danger);
+}
+
+.warn {
+  color: var(--el-color-warning);
 }
 
 .small {

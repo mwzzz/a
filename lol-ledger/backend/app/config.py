@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     ai_base_url: str = "https://api.deepseek.com"
     ai_model: str = "deepseek-flash"
     ai_timeout_seconds: float = 25.0
+    ai_enable_thinking: bool | None = None
 
     # 查战绩（第三方站点）只由后端调用：token/账号密码只放服务端 .env。
     lzyumi_base_url: str = "https://l.lzyumi.top/lzyumi/lol/info"

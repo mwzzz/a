@@ -2,12 +2,35 @@
 # 在本机（Git Bash / macOS / Linux）执行：构建前端并上传到服务器。
 #   默认发布到新服务器：root@116.62.242.2，密钥 ~/.ssh/_mw.pem
 #   换机器：SERVER=root@1.2.3.4 SSH_KEY=/path/to/key bash deploy/push.sh
+#   不同步 .env：SKIP_ENV=1 bash deploy/push.sh
 # 要求：本机能用密钥 ssh 到服务器（密码登录已禁用），服务器上已跑过一次 install.sh。
+#
+# .env：默认把本机 backend/.env 合并进服务器 /opt/lol-ledger/.env。
+# 只覆盖本机存在的键，保留服务器独有键；JWT_SECRET、DB_PATH、DEBUG、CORS_ORIGINS
+# 永不覆盖；合并前自动备份为 data/backups/env-<时间>.bak。
 set -euo pipefail
 
 SERVER="${SERVER:-root@116.62.242.2}"
 URL_HOST="${URL_HOST:-${SERVER#*@}}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SKIP_ENV="${SKIP_ENV:-0}"
+
+ENV_MERGE=""
+if [ "$SKIP_ENV" != "1" ] && [ -f "$ROOT/backend/.env" ]; then
+  ENV_MERGE="$(mktemp)"
+  tr -d '\r' < "$ROOT/backend/.env" \
+    | grep -vE '^[[:space:]]*(#|$)' \
+    | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' \
+    | grep -vE '^(JWT_SECRET|DB_PATH|DEBUG|CORS_ORIGINS)=' > "$ENV_MERGE" || true
+  if [ ! -s "$ENV_MERGE" ]; then
+    rm -f "$ENV_MERGE"
+    ENV_MERGE=""
+  fi
+fi
+cleanup_env_merge() {
+  [ -n "$ENV_MERGE" ] && rm -f "$ENV_MERGE"
+}
+trap cleanup_env_merge EXIT
 
 # 默认密钥：新服务器的 _mw.pem。原文件在 Downloads 下权限过宽，OpenSSH 会拒绝加载，
 # 所以复制到 ~/.ssh 并 chmod 600（Windows 用 icacls）。
@@ -47,6 +70,13 @@ echo "==> 上传前端静态文件"
 tar -czf - -C "$ROOT/frontend" dist \
   | ssh_run "$SERVER" "sudo mkdir -p /opt/lol-ledger/frontend && sudo rm -rf /opt/lol-ledger/frontend/dist && sudo tar -xzf - -C /opt/lol-ledger/frontend && if id lol >/dev/null 2>&1; then sudo chown -R lol:lol /opt/lol-ledger/frontend; fi"
 
+if [ -n "$ENV_MERGE" ]; then
+  echo "==> 上传 .env 合并片段"
+  ssh_run "$SERVER" "rm -f /tmp/lol-env.merge"
+  ssh_run "$SERVER" "umask 077; cat > /tmp/lol-env.merge" < "$ENV_MERGE"
+  ssh_run "$SERVER" "chmod 600 /tmp/lol-env.merge"
+fi
+
 echo "==> 安装依赖并迁移数据库"
 if ssh_run "$SERVER" "test -x /opt/lol-ledger/venv/bin/python"; then
   # 迁移会重建表，先停服务，避免迁移过程中还有写请求进来
@@ -56,6 +86,11 @@ if ssh_run "$SERVER" "test -x /opt/lol-ledger/venv/bin/python"; then
 else
   echo "服务器上还没有 venv，走首次安装（会停用原 80 官网并接管 80 端口）"
   ssh_run "$SERVER" "sudo bash /opt/lol-ledger/deploy/install.sh"
+fi
+
+if [ -n "$ENV_MERGE" ]; then
+  echo "==> 合并服务器 .env（受保护的键不覆盖）"
+  ssh_run "$SERVER" "set -e; trap 'sudo rm -f /tmp/lol-env.merge 2>/dev/null || true' EXIT; BK=/opt/lol-ledger/data/backups; sudo mkdir -p \"\$BK\"; if [ -f /opt/lol-ledger/.env ]; then sudo cp -a /opt/lol-ledger/.env \"\$BK/env-\$(TZ=Asia/Shanghai date +%Y%m%d-%H%M%S).bak\"; fi; sudo /opt/lol-ledger/venv/bin/python /opt/lol-ledger/deploy/merge_env.py /tmp/lol-env.merge /opt/lol-ledger/.env; sudo chown root:lol /opt/lol-ledger/.env; sudo chmod 640 /opt/lol-ledger/.env; sudo shred -u /tmp/lol-env.merge 2>/dev/null || sudo rm -f /tmp/lol-env.merge"
 fi
 
 echo "==> 重启服务"
