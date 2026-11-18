@@ -22,7 +22,7 @@ def _session(client, headers, names: list[str], tea: int = 300) -> dict:
         player = new_player(client, headers, name)
         add_money(client, headers, player["id"], 2000)
         ids.append(player["id"])
-    return create_session(client, headers, 0, ids, tea=tea)
+    return create_session(client, headers, ids, tea=tea)
 
 
 def _preview(client, headers, date_from: str = TODAY, date_to: str = TODAY) -> dict:
@@ -179,10 +179,10 @@ def test_minute_level_range(client, admin_headers, admin) -> None:
         add_money(client, admin_headers, item["id"], 3000)
 
     create_session(
-        client, admin_headers, 0, [first["id"]], tea=300, played_at=f"{TODAY}T09:30:00"
+        client, admin_headers, [first["id"]], tea=300, played_at=f"{TODAY}T09:30:00"
     )
     create_session(
-        client, admin_headers, 0, [second["id"]], tea=500, played_at=f"{TODAY}T21:10:00"
+        client, admin_headers, [second["id"]], tea=500, played_at=f"{TODAY}T21:10:00"
     )
 
     narrow = client.get(
@@ -223,7 +223,7 @@ def test_summary_supports_minutes(client, admin_headers, admin) -> None:
     player = new_player(client, admin_headers, "分钟客")
     add_money(client, admin_headers, player["id"], 2000)
     create_session(
-        client, admin_headers, 0, [player["id"]], tea=400, played_at=f"{TODAY}T14:20:00"
+        client, admin_headers, [player["id"]], tea=400, played_at=f"{TODAY}T14:20:00"
     )
 
     inside = client.get(

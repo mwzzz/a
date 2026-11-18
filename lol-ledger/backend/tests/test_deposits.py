@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app import db as dbmod
 from tests.test_players import add_money, new_player
-from tests.test_sessions import create_session, open_batch
+from tests.test_sessions import create_session
 
 
 def balance(client, headers, player_id: int) -> int:
@@ -64,8 +64,7 @@ def test_refund_insufficient_rolls_back(client, admin_headers) -> None:
 def test_negative_account_cannot_refund(client, admin_headers) -> None:
     player = new_player(client, admin_headers, "负翁")
     add_money(client, admin_headers, player["id"], 100)
-    batch_id = open_batch(client, admin_headers)
-    create_session(client, admin_headers, batch_id, [player["id"]], tea=300)
+    create_session(client, admin_headers, [player["id"]], tea=300)
     assert balance(client, admin_headers, player["id"]) == -200
 
     refund = client.post(

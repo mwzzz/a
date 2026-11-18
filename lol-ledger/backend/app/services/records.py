@@ -1,24 +1,13 @@
-"""记录查询：押金流水、场次记录、划转配对、批次流水与导出。全部按商家过滤。"""
+"""记录查询：押金流水、场次记录、划转配对。全部按商家过滤。"""
 
 from __future__ import annotations
-
-import csv
-import io
-from datetime import date as date_cls
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.errors import AppError, NotFoundError
-from app.models import Batch, GameSession, LedgerEntry, Player, User
-from app.serializers import entry_payload, entry_row, session_row, user_brief
-from app.services import options
-from app.services.batches import (
-    compute_summary,
-    get_batch,
-    operator_stats,
-    snapshot_summary,
-)
+from app.models import GameSession, LedgerEntry, Player, User
+from app.serializers import entry_payload, entry_row, user_brief
 from app.services.players import get_player
 from app.services.sessions import list_sessions
 from app.timeutil import bound_end_text, bound_start_text
@@ -45,7 +34,6 @@ def list_deposit_records(
     *,
     keyword: str = "",
     player_id: int | None = None,
-    batch_id: int | None = None,
     session_id: int | None = None,
     operator_id: int | None = None,
     reason: str | None = None,
@@ -69,8 +57,6 @@ def list_deposit_records(
         conditions.append(LedgerEntry.player_id == player_id)
     if operator_id is not None:
         conditions.append(LedgerEntry.operator_id == int(operator_id))
-    if batch_id is not None:
-        conditions.append(LedgerEntry.batch_id == batch_id)
     if session_id is not None:
         conditions.append(LedgerEntry.session_id == session_id)
     if reason:
@@ -88,11 +74,10 @@ def list_deposit_records(
     conditions.extend(_date_conditions(LedgerEntry.created_at, date_from, date_to))
 
     base = (
-        select(LedgerEntry, owner, operator, GameSession, Batch, other)
+        select(LedgerEntry, owner, operator, GameSession, other)
         .join(owner, owner.id == LedgerEntry.player_id)
         .join(operator, operator.id == LedgerEntry.operator_id)
         .outerjoin(GameSession, GameSession.id == LedgerEntry.session_id)
-        .outerjoin(Batch, Batch.id == LedgerEntry.batch_id)
         .outerjoin(other, other.id == LedgerEntry.counterparty_player_id)
         .where(*conditions)
     )
@@ -117,10 +102,30 @@ def list_deposit_records(
 
     rows = session.execute(base.offset((page - 1) * page_size).limit(page_size)).all()
     items = [
-        entry_row(entry, player=player, operator=user, session=game, batch=batch, counterparty=peer)
-        for entry, player, user, game, batch, peer in rows
+        entry_row(entry, player=player, operator=user, session=game, counterparty=peer)
+        for entry, player, user, game, peer in rows
     ]
+    _mark_bonus_voided(session, merchant_id, items)
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+def _mark_bonus_voided(session: Session, merchant_id: int, items: list[dict]) -> None:
+    """给本页的加赠金流水标注是否已被撤销，供前端决定是否显示「撤销」入口。"""
+    bonus_ids = [item["id"] for item in items if item["reason"] == "add_bonus"]
+    if not bonus_ids:
+        return
+    voided = set(
+        session.scalars(
+            select(LedgerEntry.reverses_ledger_id).where(
+                LedgerEntry.merchant_id == merchant_id,
+                LedgerEntry.reason == "bonus_void",
+                LedgerEntry.reverses_ledger_id.in_(bonus_ids),
+            )
+        ).all()
+    )
+    for item in items:
+        if item["reason"] == "add_bonus":
+            item["voided"] = item["id"] in voided
 
 
 def list_session_records(
@@ -251,103 +256,3 @@ def transfer_group(session: Session, group_id: str, merchant_id: int) -> dict:
     if not entries:
         raise NotFoundError("找不到这笔划转")
     return {"group_id": group_id, "entries": [entry_payload(session, entry) for entry in entries]}
-
-
-def batch_ledger(
-    session: Session,
-    batch_id: int,
-    merchant_id: int,
-    *,
-    page: int = 1,
-    page_size: int = 50,
-) -> dict:
-    get_batch(session, batch_id, merchant_id)
-    return list_deposit_records(
-        session, merchant_id, batch_id=batch_id, page=page, page_size=page_size
-    )
-
-
-def _reason_text(entry: dict) -> str:
-    return entry["reason_label"]
-
-
-def export_batch_csv(session: Session, batch_id: int, merchant_id: int) -> str:
-    batch = get_batch(session, batch_id, merchant_id)
-    summary = (
-        snapshot_summary(batch)
-        if batch.status == "closed"
-        else compute_summary(session, batch_id, merchant_id)
-    )
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(["批次", batch.label or f"#{batch.id}"])
-    writer.writerow(["开始", batch.opened_at])
-    writer.writerow(["结束", batch.closed_at or "进行中"])
-    if summary:
-        writer.writerow(["局数", summary["session_count"]])
-        writer.writerow(["人次", summary["player_times"]])
-        writer.writerow(["茶水合计（元）", f"{summary['tea_total_cents'] / 100:.2f}"])
-        writer.writerow(["加押金（元）", f"{summary['add_total_cents'] / 100:.2f}"])
-        writer.writerow(["退押金（元）", f"{summary['refund_total_cents'] / 100:.2f}"])
-        writer.writerow(["划转（元）", f"{summary['transfer_out_total_cents'] / 100:.2f}"])
-        writer.writerow(["期末总押金（元）", f"{summary['deposit_total_cents'] / 100:.2f}"])
-    if batch.status == "closed":
-        rate = int(batch.dividend_rate_percent or 50)
-        mode = batch.dividend_mode or "percent"
-        fixed_cents = int(batch.dividend_fixed_cents or 0)
-    else:
-        rate = options.dividend_rate(session, merchant_id)
-        mode = options.dividend_mode(session, merchant_id)
-        fixed_cents = options.dividend_fixed_cents(session, merchant_id)
-    dividend_title = (
-        f"分红（每局 {fixed_cents / 100:.2f} 元）" if mode == "fixed" else f"分红（{rate}%）"
-    )
-    writer.writerow([])
-    writer.writerow(["操作人", "局数", "人次", "茶水（元）", dividend_title])
-    for row in operator_stats(
-        session,
-        batch_id,
-        merchant_id,
-        mode=mode,
-        rate_percent=rate,
-        fixed_cents=fixed_cents,
-    ):
-        writer.writerow(
-            [
-                (row["user"] or {}).get("display_name", ""),
-                row["session_count"],
-                row["player_times"],
-                f"{row['tea_cents'] / 100:.2f}",
-                f"{row['dividend_cents'] / 100:.2f}",
-            ]
-        )
-    writer.writerow([])
-    writer.writerow(["时间", "玩家", "原因", "变动金额", "变动后余额", "操作人", "场次", "备注"])
-
-    rows = list_deposit_records(
-        session, merchant_id, batch_id=batch_id, page=1, page_size=200
-    )["items"]
-    page = 2
-    while True:
-        for item in rows:
-            writer.writerow(
-                [
-                    item["created_at"],
-                    item["player"]["game_id"],
-                    _reason_text(item),
-                    f"{item['signed_amount_cents'] / 100:.2f}",
-                    f"{item['balance_after_cents'] / 100:.2f}",
-                    (item["operator"] or {}).get("display_name", ""),
-                    (item["session"] or {}).get("name", ""),
-                    item["note"],
-                ]
-            )
-        chunk = list_deposit_records(
-            session, merchant_id, batch_id=batch_id, page=page, page_size=200
-        )["items"]
-        if not chunk:
-            break
-        rows = chunk
-        page += 1
-
-    return "\ufeff" + buffer.getvalue()

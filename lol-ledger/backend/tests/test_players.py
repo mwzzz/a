@@ -91,18 +91,15 @@ def test_filter_by_deposit_level(client, admin_headers) -> None:
         ("sixty", 6000, "warn"),
         ("over", 6001, "safe"),
     ]
-    batch_id = None
     for name, cents, _ in cases:
         player = new_player(client, admin_headers, name)
         if cents >= 0:
             add_money(client, admin_headers, player["id"], cents)
         else:
-            from tests.test_sessions import create_session, open_batch
+            from tests.test_sessions import create_session
 
-            if batch_id is None:
-                batch_id = open_batch(client, admin_headers)
             add_money(client, admin_headers, player["id"], 100)
-            create_session(client, admin_headers, batch_id, [player["id"]], tea=101)
+            create_session(client, admin_headers, [player["id"]], tea=101)
 
     for name, _, level in cases:
         body = client.get(

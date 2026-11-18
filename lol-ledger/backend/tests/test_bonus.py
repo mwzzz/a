@@ -9,7 +9,7 @@ from sqlalchemy import text
 
 from app import db as dbmod
 from tests.test_players import add_money, new_player
-from tests.test_sessions import create_session, open_batch
+from tests.test_sessions import create_session
 
 
 def add_campaign(client, headers, threshold_cents: int, bonus_cents: int) -> dict:
@@ -30,6 +30,14 @@ def add_bonus(client, headers, player_id: int, cents: int, note: str = "") -> di
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def void_bonus(client, headers, entry_id: int, note: str = ""):
+    return client.post(
+        f"/api/v1/ledger/entries/{entry_id}/void-bonus",
+        json={"note": note},
+        headers=headers,
+    )
 
 
 def _import_player(client, headers, game_id: str, deposit_yuan: int) -> dict:
@@ -196,7 +204,7 @@ def test_tea_deduction_uses_bonus_first(client, admin_headers) -> None:
     assert preview["negative_count"] == 0
 
     create_session(
-        client, admin_headers, open_batch(client, admin_headers), [player["id"]], tea=300
+        client, admin_headers, [player["id"]], tea=300
     )
     detail = client.get(f"/api/v1/players/{player['id']}", headers=admin_headers).json()
     assert detail["deposit_cents"] == 1000
@@ -222,7 +230,7 @@ def test_bonus_exhausted_then_cash_and_negative_balance(
     add_money(client, admin_headers, player["id"], 1000)
     add_bonus(client, admin_headers, player["id"], 200)
     create_session(
-        client, admin_headers, open_batch(client, admin_headers), [player["id"]], tea=500
+        client, admin_headers, [player["id"]], tea=500
     )
     detail = client.get(f"/api/v1/players/{player['id']}", headers=admin_headers).json()
     assert detail["deposit_cents"] == 700
@@ -230,7 +238,7 @@ def test_bonus_exhausted_then_cash_and_negative_balance(
     assert detail["balance_cents"] == 700
 
     create_session(
-        client, admin_headers, open_batch(client, admin_headers), [player["id"]], tea=1000
+        client, admin_headers, [player["id"]], tea=1000
     )
     detail = client.get(f"/api/v1/players/{player['id']}", headers=admin_headers).json()
     assert detail["deposit_cents"] == -300
@@ -254,7 +262,7 @@ def test_refund_blocked_until_bonus_consumed(client, admin_headers) -> None:
     assert "不能退" in blocked.json()["detail"]
 
     create_session(
-        client, admin_headers, open_batch(client, admin_headers), [player["id"]], tea=500
+        client, admin_headers, [player["id"]], tea=500
     )
     refunded = client.post(
         f"/api/v1/players/{player['id']}/refunds",
@@ -308,7 +316,7 @@ def test_delete_requires_both_balances_zero(client, admin_headers) -> None:
     assert "赠金" in blocked.json()["detail"]
 
     create_session(
-        client, admin_headers, open_batch(client, admin_headers), [player["id"]], tea=100
+        client, admin_headers, [player["id"]], tea=100
     )
     assert (
         client.delete(f"/api/v1/players/{player['id']}", headers=admin_headers).status_code
@@ -371,3 +379,119 @@ def test_total_balance_controls_level_sort_and_overview(client, admin_headers) -
     assert overview["total_deposit_cents"] == 4100
     assert overview["total_bonus_cents"] == 2000
     assert overview["low_deposit_count"] == 2
+
+
+def test_void_bonus_reverts_only_gift(client, admin_headers) -> None:
+    player = new_player(client, admin_headers, "误加赠金")
+    add_money(client, admin_headers, player["id"], 1000)
+    granted = add_bonus(client, admin_headers, player["id"], 500, "误点")
+
+    body = void_bonus(client, admin_headers, granted["entry"]["id"]).json()
+    assert body["entry"]["reason"] == "bonus_void"
+    assert body["entry"]["reason_label"] == "撤销加赠金"
+    assert body["entry"]["amount_cents"] == 500
+    assert body["entry"]["signed_amount_cents"] == -500
+    assert body["entry"]["bonus_amount_cents"] == 0
+    assert body["entry"]["deposit_after_cents"] == 1000
+    assert body["entry"]["bonus_after_cents"] == 0
+    assert body["entry"]["reverses_ledger_id"] == granted["entry"]["id"]
+    assert body["player"]["deposit_cents"] == 1000
+    assert body["player"]["bonus_cents"] == 0
+    assert body["player"]["balance_cents"] == 1000
+
+    detail = client.get(f"/api/v1/players/{player['id']}", headers=admin_headers).json()
+    assert detail["total_out_cents"] == 0
+    assert detail["bonus_in_cents"] == 0
+
+    report = client.get("/api/v1/reconcile", headers=admin_headers).json()
+    assert report["ok"] is True
+    assert report["total_deposit_cents"] == 1000
+    assert report["total_bonus_cents"] == 0
+
+
+def test_void_bonus_allowed_for_staff(client, admin_headers, staff_headers, staff) -> None:
+    player = new_player(client, admin_headers, "撤销权限")
+    add_money(client, admin_headers, player["id"], 1000)
+    granted = add_bonus(client, admin_headers, player["id"], 300)
+
+    body = void_bonus(client, staff_headers, granted["entry"]["id"]).json()
+    assert body["entry"]["reason"] == "bonus_void"
+    assert body["entry"]["operator"]["id"] == staff["id"]
+    assert body["player"]["bonus_cents"] == 0
+
+
+def test_void_bonus_rejects_non_bonus_entry(client, admin_headers) -> None:
+    player = new_player(client, admin_headers, "撤销押金")
+    deposit = client.post(
+        f"/api/v1/players/{player['id']}/deposits",
+        json={"amount_cents": 1000},
+        headers=admin_headers,
+    ).json()
+
+    response = void_bonus(client, admin_headers, deposit["entry"]["id"])
+    assert response.status_code == 400
+    assert "只能撤销" in response.json()["detail"]
+
+
+def test_void_bonus_rejects_consumed_bonus(client, admin_headers) -> None:
+    player = new_player(client, admin_headers, "已喝掉的赠金")
+    add_money(client, admin_headers, player["id"], 1000)
+    granted = add_bonus(client, admin_headers, player["id"], 500)
+    create_session(client, admin_headers, [player["id"]], tea=500)
+
+    response = void_bonus(client, admin_headers, granted["entry"]["id"])
+    assert response.status_code == 400
+    assert "已被茶水消耗" in response.json()["detail"]
+    detail = client.get(f"/api/v1/players/{player['id']}", headers=admin_headers).json()
+    assert detail["bonus_cents"] == 0
+    assert detail["deposit_cents"] == 1000
+
+
+def test_void_bonus_cannot_repeat(client, admin_headers) -> None:
+    player = new_player(client, admin_headers, "重复撤销")
+    add_money(client, admin_headers, player["id"], 1000)
+    granted = add_bonus(client, admin_headers, player["id"], 400)
+
+    assert void_bonus(client, admin_headers, granted["entry"]["id"]).status_code == 201
+    again = void_bonus(client, admin_headers, granted["entry"]["id"])
+    assert again.status_code == 400
+    assert "已经撤销" in again.json()["detail"]
+    detail = client.get(f"/api/v1/players/{player['id']}", headers=admin_headers).json()
+    assert detail["bonus_cents"] == 0
+
+
+def test_void_bonus_unblocks_refund(client, admin_headers) -> None:
+    player = new_player(client, admin_headers, "撤销后退款")
+    add_money(client, admin_headers, player["id"], 1000)
+    granted = add_bonus(client, admin_headers, player["id"], 500)
+
+    blocked = client.post(
+        f"/api/v1/players/{player['id']}/refunds",
+        json={"amount_cents": 1000},
+        headers=admin_headers,
+    )
+    assert blocked.status_code == 400
+
+    assert void_bonus(client, admin_headers, granted["entry"]["id"]).status_code == 201
+    refunded = client.post(
+        f"/api/v1/players/{player['id']}/refunds",
+        json={"amount_cents": 1000},
+        headers=admin_headers,
+    )
+    assert refunded.status_code == 201, refunded.text
+    assert refunded.json()["player"]["deposit_cents"] == 0
+    report = client.get("/api/v1/reconcile", headers=admin_headers).json()
+    assert report["ok"] is True
+    assert report["total_bonus_cents"] == 0
+
+
+def test_void_bonus_is_tenant_isolated(client, admin_headers, admin_b_headers) -> None:
+    player = new_player(client, admin_headers, "本家赠金")
+    add_money(client, admin_headers, player["id"], 1000)
+    granted = add_bonus(client, admin_headers, player["id"], 500)
+
+    other = void_bonus(client, admin_b_headers, granted["entry"]["id"])
+    assert other.status_code == 404
+    assert client.get(f"/api/v1/players/{player['id']}", headers=admin_headers).json()[
+        "bonus_cents"
+    ] == 500

@@ -8,20 +8,13 @@ from app import db as dbmod
 from tests.test_players import add_money, new_player
 
 
-def open_batch(client, headers) -> int:
-    """班次已取消；保留这个函数只是为了让老用例保持调用顺序，返回值不再有意义。"""
-    return 0
-
-
 def create_session(
     client,
     headers,
-    batch_id: int,
     player_ids: list[int],
     tea: int = 200,
     **extra,
 ) -> dict:
-    """batch_id 参数已废弃，仅为兼容旧用例保留位置。"""
     payload = {
         "name": extra.pop("name", ""),
         "played_at": extra.pop("played_at", None),
@@ -35,12 +28,11 @@ def create_session(
 
 
 def test_open_session_deducts_and_counts(client, admin_headers) -> None:
-    batch_id = open_batch(client, admin_headers)
     ids = [new_player(client, admin_headers, f"队员{i}")["id"] for i in range(3)]
     for pid in ids:
         add_money(client, admin_headers, pid, 1000)
 
-    body = create_session(client, admin_headers, batch_id, ids, tea=300)
+    body = create_session(client, admin_headers, ids, tea=300)
     assert body["player_count"] == 3
     assert body["tea_total_cents"] == 900
     assert body["name"].endswith("第1局")
@@ -52,28 +44,25 @@ def test_open_session_deducts_and_counts(client, admin_headers) -> None:
 
 
 def test_open_session_dedup_players(client, admin_headers) -> None:
-    batch_id = open_batch(client, admin_headers)
     first = new_player(client, admin_headers, "重复甲")["id"]
     second = new_player(client, admin_headers, "重复乙")["id"]
-    body = create_session(client, admin_headers, batch_id, [first, first, second], tea=100)
+    body = create_session(client, admin_headers, [first, first, second], tea=100)
     assert body["player_count"] == 2
 
 
 def test_open_session_allows_negative(client, admin_headers) -> None:
-    batch_id = open_batch(client, admin_headers)
     pid = new_player(client, admin_headers, "余额不足")["id"]
     add_money(client, admin_headers, pid, 100)
-    create_session(client, admin_headers, batch_id, [pid], tea=300)
+    create_session(client, admin_headers, [pid], tea=300)
     detail = client.get(f"/api/v1/players/{pid}", headers=admin_headers).json()
     assert detail["deposit_cents"] == -200
     assert detail["deposit_level"] == "low"
 
 
 def test_zero_tea_writes_zero_entry(client, admin_headers) -> None:
-    batch_id = open_batch(client, admin_headers)
     pid = new_player(client, admin_headers, "免单")["id"]
     add_money(client, admin_headers, pid, 500)
-    body = create_session(client, admin_headers, batch_id, [pid], tea=0)
+    body = create_session(client, admin_headers, [pid], tea=0)
     assert body["tea_total_cents"] == 0
     ledger = client.get(f"/api/v1/players/{pid}/ledger", headers=admin_headers).json()
     assert ledger["items"][0]["reason"] == "normal_deduct"
@@ -84,19 +73,18 @@ def test_zero_tea_writes_zero_entry(client, admin_headers) -> None:
 
 
 def test_session_player_limits(client, admin_headers) -> None:
-    batch_id = open_batch(client, admin_headers)
     players = [new_player(client, admin_headers, f"人{i}")["id"] for i in range(11)]
 
     empty = client.post(
         "/api/v1/sessions",
-        json={"batch_id": batch_id, "tea_fee_cents": 100, "player_ids": []},
+        json={"tea_fee_cents": 100, "player_ids": []},
         headers=admin_headers,
     )
     assert empty.status_code == 400
 
     too_many = client.post(
         "/api/v1/sessions",
-        json={"batch_id": batch_id, "tea_fee_cents": 100, "player_ids": players},
+        json={"tea_fee_cents": 100, "player_ids": players},
         headers=admin_headers,
     )
     assert too_many.status_code == 400
@@ -104,13 +92,12 @@ def test_session_player_limits(client, admin_headers) -> None:
 
 
 def test_bad_player_rolls_back_whole_session(client, admin_headers) -> None:
-    batch_id = open_batch(client, admin_headers)
     good = new_player(client, admin_headers, "好人")["id"]
     add_money(client, admin_headers, good, 1000)
 
     response = client.post(
         "/api/v1/sessions",
-        json={"batch_id": batch_id, "tea_fee_cents": 300, "player_ids": [good, 999999]},
+        json={"tea_fee_cents": 300, "player_ids": [good, 999999]},
         headers=admin_headers,
     )
     assert response.status_code == 404
@@ -125,10 +112,9 @@ def test_bad_player_rolls_back_whole_session(client, admin_headers) -> None:
 
 
 def test_session_players_link_ledger(client, admin_headers) -> None:
-    batch_id = open_batch(client, admin_headers)
     pid = new_player(client, admin_headers, "查流水")["id"]
     add_money(client, admin_headers, pid, 1000)
-    body = create_session(client, admin_headers, batch_id, [pid], tea=200)
+    body = create_session(client, admin_headers, [pid], tea=200)
 
     assert body["players"][0]["balance_before_cents"] == 1000
     assert body["players"][0]["balance_after_cents"] == 800
@@ -146,21 +132,19 @@ def test_session_players_link_ledger(client, admin_headers) -> None:
 
 
 def test_open_session_updates_last_tea(client, admin_headers) -> None:
-    batch_id = open_batch(client, admin_headers)
     pid = new_player(client, admin_headers, "记茶水")["id"]
-    create_session(client, admin_headers, batch_id, [pid], tea=350)
+    create_session(client, admin_headers, [pid], tea=350)
     settings = client.get("/api/v1/settings", headers=admin_headers).json()
     assert settings["last_tea_cents"] == 350
 
 
 def test_sessions_sorted_by_played_at_desc(client, admin_headers) -> None:
-    batch_id = open_batch(client, admin_headers)
     pid = new_player(client, admin_headers, "排序哥")["id"]
     create_session(
-        client, admin_headers, batch_id, [pid], tea=100, played_at="2026-10-30T10:00:00+08:00"
+        client, admin_headers, [pid], tea=100, played_at="2026-10-30T10:00:00+08:00"
     )
     create_session(
-        client, admin_headers, batch_id, [pid], tea=100, played_at="2026-10-30T15:00:00+08:00"
+        client, admin_headers, [pid], tea=100, played_at="2026-10-30T15:00:00+08:00"
     )
     listed = client.get("/api/v1/sessions", headers=admin_headers).json()
     played = [item["played_at"] for item in listed["items"]]
@@ -185,7 +169,6 @@ def test_default_session_name_increments_same_day(client, admin_headers) -> None
     first = create_session(
         client,
         admin_headers,
-        open_batch(client, admin_headers),
         [pid],
         tea=100,
         played_at="2026-11-13T10:00:00+08:00",
@@ -193,7 +176,6 @@ def test_default_session_name_increments_same_day(client, admin_headers) -> None
     second = create_session(
         client,
         admin_headers,
-        open_batch(client, admin_headers),
         [pid],
         tea=100,
         played_at="2026-11-13T11:00:00+08:00",
@@ -221,7 +203,6 @@ def test_tea_free_players_are_removed(client, admin_headers) -> None:
     body = create_session(
         client,
         admin_headers,
-        open_batch(client, admin_headers),
         [free["id"], paid["id"]],
         tea=100,
     )

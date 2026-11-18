@@ -9,9 +9,9 @@
       <div>
         <span class="muted">当前余额</span>
         <DepositBadge
-          :cents="player.balance_cents"
+          :cents="shownBalance"
           :deposit-cents="player.deposit_cents"
-          :bonus-cents="player.bonus_cents"
+          :bonus-cents="currentBonus"
           :level="player.deposit_level"
         />
       </div>
@@ -54,6 +54,19 @@
           <span class="muted">{{ row.operator?.display_name || '-' }}</span>
         </template>
       </el-table-column>
+      <el-table-column label="操作" width="72" align="right">
+        <template #default="{ row }">
+          <el-button
+            v-if="canVoid(row)"
+            link
+            type="warning"
+            @click="onVoid(row)"
+          >
+            撤销
+          </el-button>
+          <span v-else-if="row.reason === 'add_bonus' && row.voided" class="muted">已撤销</span>
+        </template>
+      </el-table-column>
     </el-table>
 
     <div class="pager">
@@ -70,9 +83,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { computed, ref, watch } from 'vue'
 
-import { playerApi } from '@/api'
+import { moneyApi, playerApi } from '@/api'
 import type { LedgerEntryRow, PlayerRow } from '@/api/types'
 import DepositBadge from '@/components/common/DepositBadge.vue'
 import MoneyText from '@/components/common/MoneyText.vue'
@@ -86,6 +100,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'update:modelValue', value: boolean): void
+  (event: 'changed'): void
 }>()
 
 const rows = ref<LedgerEntryRow[]>([])
@@ -93,6 +108,11 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = 20
 const loading = ref(false)
+const currentBonus = ref(0)
+
+const shownBalance = computed(
+  () => (props.player?.deposit_cents || 0) + currentBonus.value,
+)
 
 const totalIn = ref(0)
 const totalOut = ref(0)
@@ -103,19 +123,58 @@ watch(
   async (visible) => {
     if (!visible || !props.player) return
     page.value = 1
+    currentBonus.value = props.player.bonus_cents
     await load()
-    try {
-      const detail = await playerApi.get(props.player.id)
-      totalIn.value = detail.total_in_cents || 0
-      totalOut.value = detail.total_out_cents || 0
-      bonusIn.value = detail.bonus_in_cents || 0
-    } catch {
-      totalIn.value = 0
-      totalOut.value = 0
-      bonusIn.value = 0
-    }
+    await refreshDetail()
   },
 )
+
+async function refreshDetail() {
+  if (!props.player) return
+  try {
+    const detail = await playerApi.get(props.player.id)
+    totalIn.value = detail.total_in_cents || 0
+    totalOut.value = detail.total_out_cents || 0
+    bonusIn.value = detail.bonus_in_cents || 0
+    currentBonus.value = detail.bonus_cents || 0
+  } catch {
+    totalIn.value = 0
+    totalOut.value = 0
+    bonusIn.value = 0
+  }
+}
+
+function canVoid(row: LedgerEntryRow) {
+  return (
+    row.reason === 'add_bonus' &&
+    !row.voided &&
+    currentBonus.value >= row.amount_cents
+  )
+}
+
+async function onVoid(row: LedgerEntryRow) {
+  try {
+    await ElMessageBox.confirm(
+      `确认撤销这笔 ¥${formatCents(row.amount_cents)} 的加赠金？` +
+        '只回退赠金，不动现金押金；如需补记请再走「加押金」。',
+      '确认撤销加赠金',
+      { type: 'warning', confirmButtonText: '确认撤销', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  try {
+    const result = await moneyApi.voidBonus(row.id)
+    currentBonus.value = result.player.bonus_cents
+    ElMessage.success('已撤销这笔加赠金')
+    page.value = 1
+    await load()
+    await refreshDetail()
+    emit('changed')
+  } catch {
+    // 失败提示与回滚由全局拦截器负责，这里保持抽屉现状
+  }
+}
 
 async function load() {
   if (!props.player) return

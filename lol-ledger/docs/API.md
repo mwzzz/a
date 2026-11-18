@@ -7,10 +7,10 @@ Authorization: Bearer <access_token>
 ```
 
 金额字段一律是**整数分**，字段名以 `_cents` 结尾。错误统一返回 `{"detail": "中文提示"}`：
-业务错误 400、未登录/过期 401、越权 403、不存在 404、AI 占位 501、登录试错过多 429。
+业务错误 400、未登录/过期 401、越权 403、不存在 404、登录试错过多 429。
 
 所有业务接口都会自动按**当前账号所属商家**过滤，请求体不需要也不能传 `merchant_id`。
-用别家的 id 访问玩家、批次、场次、流水、账号，一律返回 **404**（不暴露数据是否存在）。
+用别家的 id 访问玩家、场次、流水、账号，一律返回 **404**（不暴露数据是否存在）。
 
 商家和门店账号由**开发者账号**（`is_superadmin`）在 `/platform/*` 下管理；开发者账号只能用命令行引导一次：
 `create-superadmin --username <账号>`。门店管理员仍然只在 `/users` 里管本店账号。
@@ -72,7 +72,7 @@ Authorization: Bearer <access_token>
 | POST | `/platform/merchants` | `{name, note?, admin_username?, admin_password?, admin_display_name?}`，可同时建第一个管理员 |
 | PATCH | `/platform/merchants/{id}` | 改 `name` / `note` / `status(active/disabled)`；停用后该店账号立即无法登录 |
 | GET | `/platform/merchants/{id}/purge-preview` | 清空前预览：各表将删除的行数、当前在库现金、保留项、风险提示。只读 |
-| POST | `/platform/merchants/{id}/purge` | `{confirm_name, note?}`，清空该店玩家/班次/场次/流水/交接/分红结算；`confirm_name` 必须与商家名完全一致，删除前自动整库备份，写审计 |
+| POST | `/platform/merchants/{id}/purge` | `{confirm_name, note?}`，清空该店玩家/场次/流水/分红结算（旧版班次、交接残留一并清理）；`confirm_name` 必须与商家名完全一致，删除前自动整库备份，写审计 |
 | GET | `/platform/merchants/{id}/users` | 指定商家的账号（不含开发者账号） |
 | POST | `/platform/merchants/{id}/users` | `{username, password, display_name?, role}`，商家停用时拒绝 |
 | PATCH | `/platform/users/{id}` | 改显示名 / 角色 / 启停；最后一个启用的管理员不能降级或停用 |
@@ -85,7 +85,6 @@ Authorization: Bearer <access_token>
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/users` | 本商家账号列表 |
-| GET | `/users/options` | 本店启用账号（交班弹窗选接收人用，店员也可读） |
 | POST | `/users` | `{username, password, display_name, role}`，自动归属当前商家 |
 | PATCH | `/users/{id}` | 改显示名 / 角色 / 启停；别家账号 404 |
 | POST | `/users/{id}/password` | 重置密码；别家账号 404 |
@@ -116,6 +115,7 @@ Authorization: Bearer <access_token>
 | --- | --- | --- |
 | POST | `/players/{id}/deposits` | 加押金，`{amount_cents, note?}`，必须 > 0；命中充值活动时同事务追加 `add_bonus` 流水，返回 `{entry, bonus_entry, campaign, player}` |
 | POST | `/players/{id}/bonus` | 手动加赠金，`{amount_cents, note?}`，必须 > 0；管理员和店员都可用 |
+| POST | `/ledger/entries/{entry_id}/void-bonus` | 撤销一笔误加的赠金，`{note?}`，**管理员和店员都可用**；写一条反向 `bonus_void` 流水只回退赠金、不动现金；要求该笔 `add_bonus` 未被茶水消耗且未撤销过，否则 400；跨商家 404 |
 | POST | `/players/{id}/refunds` | 退押金，不能超过现金押金；玩家有赠金时拒绝，赠金为 0 后才能退 |
 | POST | `/transfers` | `{from_player_id, to_player_id, amount_cents, note?}`；只动现金押金，有赠金时不能超过现金部分 |
 
@@ -127,54 +127,19 @@ Authorization: Bearer <access_token>
 - `bonus_cents`：赠金，只能扣茶水；
 - `balance_cents = deposit_cents + bonus_cents`：界面显示的总余额。
 
-流水新增 `bonus_amount_cents`（本笔赠金抵扣额）、`deposit_after_cents`（变动后现金）、`bonus_after_cents`（变动后赠金）；`balance_after_cents` 为总余额。
+流水新增 `bonus_amount_cents`（本笔赠金抵扣额）、`deposit_after_cents`（变动后现金）、`bonus_after_cents`（变动后赠金）；`balance_after_cents` 为总余额。`reason` 取值集合含 `bonus_void`（撤销加赠金，赠金减少、现金不变），撤销流水用 `reverses_ledger_id` 指回被撤销的 `add_bonus` 行；`/records/deposits` 与玩家流水里的 `add_bonus` 行会带 `voided`（是否已被撤销）。
+
+流水 `reason` 取值：`add_deposit`、`add_bonus`、`bonus_void`、`normal_deduct`、`refund`、`transfer_out`、`transfer_in`。
 
 返回 `{entry, player}`；加押金命中活动时还返回 `bonus_entry` 和 `campaign`。`entry.reason_label` 已经拼好中文（划转带对手名和箭头）。
-
-## 批次
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/batches` | `status(all/open/closed), keyword, date_from, date_to, page, page_size, include_sessions` |
-| GET | `/batches/current` | 进行中的批次，没有则 `{batch: null}` |
-| POST | `/batches` | 开班 `{label?, note?}`，已有进行中批次会拒绝 |
-| GET | `/batches/{id}` | 详情，含所有场次 |
-| GET | `/batches/{id}/summary` | 汇总，已交班用快照，进行中实时算 |
-| GET | `/batches/{id}/ledger` | 本批流水，分页 |
-| POST | `/batches/{id}/close` | 交班，见下方请求体，返回快照汇总 |
-| GET | `/batches/{id}/export.csv` | 导出 CSV（带 BOM，含操作人分红） |
-
-交班请求体：
-
-```json
-{
-  "tea_to_user_id": 2,
-  "deposit_to_user_id": 3,
-  "tea_method": "wechat",
-  "deposit_method": "wechat",
-  "note": "交给晚班"
-}
-```
-
-- 茶水营业款只能上缴给本店管理员；押金余额可以交给本店任意启用账号
-- 只有当前保管人能交班，否则 400
-- `tea_method` / `deposit_method`：`wechat / alipay / cash / bank / other`
-- 交班后 `custodian_user_id` 切换为押金接收人，并在 `cash_handovers` 留一条交接记录
-
-批次详情还会返回 `dividend_rate_percent`、`operators`（按建局人统计局数/人次/茶水/分红）、
-`handover`（交班交接记录）、`custody`（当前保管人与在库现金）。
-
-汇总字段：`session_count, player_times, tea_total_cents, add_total_cents, refund_total_cents,
-transfer_out_total_cents, transfer_count, net_change_cents, deposit_total_cents,
-opening_total_cents`。
 
 ## 场次
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/sessions` | `batch_id, keyword, date_from, date_to, page, page_size` |
+| GET | `/sessions` | `keyword, date_from, date_to, page, page_size` |
 | POST | `/sessions/preview` | `{player_ids, tea_fee_cents}` → 每人扣前/扣后/是否变负 |
-| POST | `/sessions` | `{batch_id?, name?, played_at?, note?, tea_fee_cents, player_ids}` |
+| POST | `/sessions` | `{name?, played_at?, note?, tea_fee_cents, player_ids}` |
 | GET | `/sessions/{id}` | 场次详情，含每人扣费 |
 
 规则：1~10 人、自动去重、每人扣相同茶水、允许扣成负数、整局一个事务。常用名单「免茶水」分类里的玩家会被自动排除（按游戏 id，忽略 `#后缀` 和大小写）；黑名单玩家不能开局，返回 400。
@@ -183,7 +148,7 @@ opening_total_cents`。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/records/deposits` | `keyword, player_id, batch_id, session_id, operator_id, reason, date_from, date_to, sort, page, page_size` |
+| GET | `/records/deposits` | `keyword, player_id, session_id, operator_id, reason, date_from, date_to, sort, page, page_size` |
 | GET | `/records/sessions` | 场次记录，支持 `operator_id` |
 | GET | `/records/operators` | 本店操作人（含已停用），供筛选下拉 |
 | GET | `/records/operator-summary` | `operator_id, date_from, date_to`；返回收押金、退押金、差额、笔数，划转不计入 |
@@ -196,7 +161,6 @@ opening_total_cents`。
 | POST | `/settings/recharge-campaigns` | 新增档位 `{threshold_cents, bonus_cents}`，仅管理员 |
 | PATCH | `/settings/recharge-campaigns/{id}` | 修改档位，仅管理员 |
 | DELETE | `/settings/recharge-campaigns/{id}` | 删除档位，仅管理员；已产生的赠金流水不变 |
-| POST | `/ai/recognize-players` | 本期固定 501（AI 识别占位） |
 
 ## 小工具 · 排队登记（店员和管理员都可用）
 

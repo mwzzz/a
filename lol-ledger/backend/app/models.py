@@ -146,6 +146,9 @@ class LedgerEntry(Base):
     bonus_amount_cents: Mapped[int] = mapped_column(Integer, default=0)
     deposit_after_cents: Mapped[int] = mapped_column(Integer, default=0)
     bonus_after_cents: Mapped[int] = mapped_column(Integer, default=0)
+    reverses_ledger_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ledger.id"), nullable=True
+    )
     counterparty_player_id: Mapped[int | None] = mapped_column(
         ForeignKey("players.id"), nullable=True
     )

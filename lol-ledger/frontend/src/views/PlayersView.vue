@@ -201,7 +201,7 @@
       :default-amount-cents="defaultTransferCents"
       @saved="reload"
     />
-    <PlayerLedgerDrawer v-model="ledgerVisible" :player="active" />
+    <PlayerLedgerDrawer v-model="ledgerVisible" :player="active" @changed="reload" />
   </div>
 </template>
 

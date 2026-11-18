@@ -38,6 +38,11 @@
       </el-form-item>
     </el-form>
 
+    <div v-if="mode === 'bonus'" class="bonus-tip">
+      赠金不计入现金收款，且<b>不能退款、不能划押</b>，只能用于扣茶水。
+      如果只是要收押金，请改用「加押金」。
+    </div>
+
     <div v-if="mode === 'add'" class="campaign-line">
       <span v-if="campaignLoading" class="muted">正在读取充值活动…</span>
       <span v-else-if="campaignError" class="warn">
@@ -66,7 +71,7 @@
     <template #footer>
       <el-button @click="close">取消</el-button>
       <el-button
-        type="primary"
+        :type="mode === 'bonus' ? 'warning' : 'primary'"
         :loading="saving"
         :disabled="blocked || Boolean(error)"
         @click="submit"
@@ -78,7 +83,7 @@
 </template>
 
 <script setup lang="ts">
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 
 import { campaignApi, moneyApi } from '@/api'
@@ -231,6 +236,23 @@ async function submit() {
   }
   if (!props.player) return
 
+  if (props.mode === 'bonus') {
+    try {
+      await ElMessageBox.confirm(
+        `确认为 ${props.player.game_id} 加赠金 ¥${formatCents(cents)}？` +
+          '赠金不计入现金收款，且不可退款、不可划押。',
+        '确认加赠金',
+        {
+          type: 'warning',
+          confirmButtonText: '确认加赠金',
+          cancelButtonText: '取消',
+        },
+      )
+    } catch {
+      return
+    }
+  }
+
   saving.value = true
   try {
     const playerId = props.player.id
@@ -312,6 +334,17 @@ async function submit() {
   font-size: 12px;
   color: var(--el-color-primary);
   line-height: 1.5;
+}
+
+.bonus-tip {
+  margin-bottom: 14px;
+  padding: 9px 11px;
+  border: 1px solid rgba(230, 162, 60, 0.32);
+  background: var(--app-warning-soft);
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--el-color-warning);
+  line-height: 1.6;
 }
 
 .preview {

@@ -14,6 +14,8 @@ zj_queries / zj_grants。只新增表，不动任何既有表。
 v10 引入「常用名单」小工具；v11 给玩家增加黑名单标记；
 v12 引入玩家赠金与充值活动：players.bonus_cents、ledger 现金/赠金拆分、
 recharge_campaigns 档位表。
+v13 引入「撤销加赠金」：ledger reason 白名单加 bonus_void，新增可空列
+reverses_ledger_id 指向被撤销的加赠金流水；仅加宽约束/加列，不动历史数据。
 
 迁移策略：
 - 全新库：按 v6 直接建表，写入默认商家、平台商家和默认配置。
@@ -39,7 +41,7 @@ from app.timeutil import now_text
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 DEFAULT_MERCHANT_NAME = "默认商家"
 PLATFORM_MERCHANT_NAME = "平台管理"
 DEFAULT_DIVIDEND_RATE = 50
@@ -299,13 +301,14 @@ CREATE TABLE IF NOT EXISTS ledger (
     reason                 TEXT    NOT NULL CHECK (reason IN (
                                'normal_deduct', 'manual_deduct', 'refund',
                                'add_deposit', 'transfer_out', 'transfer_in',
-                               'add_bonus')),
+                               'add_bonus', 'bonus_void')),
     amount_cents           INTEGER NOT NULL,
     balance_before_cents   INTEGER NOT NULL,
     balance_after_cents    INTEGER NOT NULL,
     bonus_amount_cents     INTEGER NOT NULL DEFAULT 0,
     deposit_after_cents    INTEGER NOT NULL,
     bonus_after_cents      INTEGER NOT NULL DEFAULT 0,
+    reverses_ledger_id     INTEGER REFERENCES ledger(id),
     counterparty_player_id INTEGER REFERENCES players(id),
     transfer_group_id      TEXT,
     operator_id            INTEGER NOT NULL REFERENCES users(id),
@@ -1294,6 +1297,59 @@ def _upgrade_v11_to_v12(conn: sqlite3.Connection, db_path: Path) -> None:
         conn.execute("PRAGMA foreign_keys=ON")
 
 
+def _upgrade_v12_to_v13(conn: sqlite3.Connection, db_path: Path) -> None:
+    """v12 → v13：新增撤销加赠金原因 bonus_void 与流水指向列 reverses_ledger_id。
+
+    只加宽 reason 白名单并新增一可空列，全部历史行、ID 与 session_players
+    关联原样保留，非破坏性；SQLite 不能改 CHECK，因此重建 ledger 表。
+    """
+    backup = _backup(conn, db_path, "pre-v13")
+    logger.info("迁移前已备份：%s", backup)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not _column_exists(conn, "ledger", "reverses_ledger_id"):
+            new_table = LEDGER_TABLE_STATEMENT.replace(
+                "CREATE TABLE IF NOT EXISTS ledger",
+                "CREATE TABLE ledger__v13",
+                1,
+            )
+            conn.execute(new_table)
+            conn.execute(
+                """
+                INSERT INTO ledger__v13 (
+                    id, merchant_id, player_id, batch_id, session_id, reason,
+                    amount_cents, balance_before_cents, balance_after_cents,
+                    bonus_amount_cents, deposit_after_cents, bonus_after_cents,
+                    counterparty_player_id, transfer_group_id, operator_id,
+                    note, created_at, reverses_ledger_id
+                )
+                SELECT id, merchant_id, player_id, batch_id, session_id, reason,
+                       amount_cents, balance_before_cents, balance_after_cents,
+                       bonus_amount_cents, deposit_after_cents, bonus_after_cents,
+                       counterparty_player_id, transfer_group_id, operator_id,
+                       note, created_at, NULL
+                FROM ledger
+                """
+            )
+            conn.execute("DROP TABLE ledger")
+            conn.execute("ALTER TABLE ledger__v13 RENAME TO ledger")
+            for statement in INDEX_STATEMENTS:
+                if " ON ledger" in statement:
+                    conn.execute(statement)
+
+        conn.execute("PRAGMA user_version = 13")
+        _assert_foreign_keys(conn)
+        conn.execute("COMMIT")
+        logger.info("v12 → v13 迁移完成：撤销加赠金就绪")
+    except Exception:
+        _rollback(conn)
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
 def ensure_schema() -> None:
     path = db.current_path()
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=20)
@@ -1328,6 +1384,8 @@ def ensure_schema() -> None:
             _upgrade_v10_to_v11(conn, path)
         if version < 12:
             _upgrade_v11_to_v12(conn, path)
+        if version < 13:
+            _upgrade_v12_to_v13(conn, path)
     finally:
         conn.close()
 

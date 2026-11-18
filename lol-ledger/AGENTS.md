@@ -24,7 +24,7 @@
 
 ## 技术栈与目录
 
-- 后端：FastAPI + SQLAlchemy 2.0 + SQLite（WAL），schema 版本化迁移，当前 **v12**
+- 后端：FastAPI + SQLAlchemy 2.0 + SQLite（WAL），schema 版本化迁移，当前 **v13**
 - 前端：Vue 3 + TypeScript + Element Plus + Pinia + Vite
 - 目录：`backend/app`（`api/` 路由、`services/` 业务、`migrations.py` 建表与迁移）、`backend/tests`、`frontend/src`（`views/` 页面、`api/` 请求与类型）、`deploy/`、`docs/`
 
@@ -59,7 +59,7 @@ cd frontend && npm run typecheck && npm run build
 | 分红 | 两种模式：`percent`（茶水总额 × 比例）/ `fixed`（局数 × 每局金额），存在 `merchant_settings` |
 | 差额 | 收押金 − 退押金，按 `operator_id` 汇总；**正数=店员应交，负数=店长应补**，划转不计入 |
 | 时间归属 | 场次按 `played_at`，押金与分红按 `created_at`；统一东八区，字符串字典序即时序 |
-| 赠金 | `players.bonus_cents`，只能被 `normal_deduct` 扣茶水消耗，先扣赠金再扣现金；不能退款、不能划押 |
+| 赠金 | `players.bonus_cents`，只能被 `normal_deduct` 扣茶水消耗，先扣赠金再扣现金；不能退款、不能划押。误加的赠金可由管理员或店员撤销（reason `bonus_void`，写一条反向流水只回退赠金、不动现金），仅限**未被茶水消耗且未撤销过**的 `add_bonus` 流水 |
 | 充值活动 | `recharge_campaigns` 按商家配置多档，加押金自动取满足金额的最高档送一次；Excel 导入不触发 |
 | 余额 | 现金 `players.deposit_cents` = 现金流水净额 = 末条 `deposit_after_cents`；赠金 `players.bonus_cents` = 赠金流水净额 = 末条 `bonus_after_cents`；界面总余额 = 两者相加 |
 | 分红幂等 | 同一区间（含重叠）只结算一次；历史记录只存到日期，比较前要归一化成 00:00 / 23:59:59 |
@@ -86,7 +86,7 @@ cd frontend && npm run typecheck && npm run build
 - **v8 取消了开班/交班**，`sessions.batch_id` 已删除，场次与班次的归属**永久丢失**；`batches` 表残留 6 条孤儿数据，新代码完全不读它。
 - **v9 的查战绩（`zj_*` 五张表、`api/zj*.py`）是另一个会话加的模块**，与记账主流程无关，改别的功能时别动。
 - 两条历史分红结算占住了 `11-01~11-05`（极光电竞）和 `11-01~11-06`（面包人）区间，结算这两个区间时对应用户会被跳过，这是预期行为。
-- `services/batches.py`、`services/custody.py` 是 v8 之后的死代码，保留仅作参考。
+- `services/batches.py` 已随死代码清理删除；`services/custody.py` 只剩 `is_holder()`，仍在用（停用账号时拦截当前保管人），不是死代码。
 
 ## 小工具约定
 

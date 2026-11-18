@@ -133,31 +133,6 @@ def list_users(session: Session, merchant_id: int) -> list[User]:
     )
 
 
-def list_user_options(session: Session, merchant_id: int) -> list[dict]:
-    """交班弹窗用：本店启用的账号（管理员排在前面）。"""
-    users = list(
-        session.scalars(
-            select(User)
-            .where(
-                User.merchant_id == merchant_id,
-                User.is_active.is_(True),
-                User.is_superadmin.is_(False),
-            )
-            .order_by(User.id)
-        )
-    )
-    users.sort(key=lambda item: (0 if item.role == "admin" else 1, item.id))
-    return [
-        {
-            "id": user.id,
-            "username": user.username,
-            "display_name": user.display_name or user.username,
-            "role": user.role,
-        }
-        for user in users
-    ]
-
-
 def create_user(
     session: Session,
     actor: Actor,

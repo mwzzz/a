@@ -76,6 +76,17 @@ export function todayMomentRange(): [string, string] {
   return [`${day}T00:00`, `${day}T23:59`]
 }
 
+/** 默认区间：daysBack 天前的 hour:00 到今天 hour:00（操作人汇总用，按早班交接点切） */
+export function recentMorningRange(daysBack = 3, hour = 8): [string, string] {
+  const stamp = (offset: number) => {
+    const date = new Date()
+    date.setDate(date.getDate() - offset)
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+  }
+  const hhmm = `${pad(hour)}:00`
+  return [`${stamp(daysBack)}T${hhmm}`, `${stamp(0)}T${hhmm}`]
+}
+
 /** 日期时间区间选择器的快捷项 */
 export function momentShortcuts() {
   const dayStart = (offset: number) => {

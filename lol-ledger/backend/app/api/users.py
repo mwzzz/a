@@ -8,8 +8,6 @@ from sqlalchemy.orm import Session
 from app.deps import (
     Actor,
     client_ip,
-    get_current_user,
-    get_read_db,
     get_write_db,
     require_admin,
 )
@@ -28,14 +26,6 @@ def list_users(
         user_service.user_row(user)
         for user in user_service.list_users(session, actor.merchant_id)
     ]
-
-
-@router.get("/options")
-def user_options(
-    actor: Actor = Depends(get_current_user),
-    session: Session = Depends(get_read_db),
-) -> list[dict]:
-    return user_service.list_user_options(session, actor.merchant_id)
 
 
 @router.post("", status_code=201)

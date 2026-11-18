@@ -149,6 +149,7 @@ def _write_entry(
     session_id: int | None = None,
     counterparty_player_id: int | None = None,
     transfer_group_id: str | None = None,
+    reverses_ledger_id: int | None = None,
     note: str = "",
 ) -> LedgerEntry:
     entry = LedgerEntry(
@@ -165,6 +166,7 @@ def _write_entry(
         bonus_after_cents=int(bonus_after),
         counterparty_player_id=counterparty_player_id,
         transfer_group_id=transfer_group_id,
+        reverses_ledger_id=reverses_ledger_id,
         operator_id=actor.id,
         note=note,
         created_at=now_text(),
@@ -272,6 +274,65 @@ def add_bonus(
     return {
         "entry": entry_payload(session, entry),
         "player": _player_payload(session, player_id, merchant_id),
+    }
+
+
+def void_bonus(
+    session: Session,
+    actor: Actor,
+    entry_id: int,
+    note: str = "",
+) -> dict:
+    """撤销一笔误加的赠金：写一条反向 bonus_void 流水，只回退赠金、不碰现金。
+
+    只允许撤销尚未被茶水消耗、且从未被撤销过的加赠金流水，避免赠金凭空变负或重复扣减。
+    """
+    merchant_id = actor.merchant_id
+    entry = session.get(LedgerEntry, int(entry_id))
+    if entry is None or int(entry.merchant_id) != merchant_id:
+        raise NotFoundError("找不到这笔流水")
+    if entry.reason != "add_bonus":
+        raise AppError("只能撤销「加赠金」流水")
+    amount_cents = int(entry.amount_cents)
+
+    already = session.scalar(
+        select(LedgerEntry.id).where(
+            LedgerEntry.merchant_id == merchant_id,
+            LedgerEntry.reason == "bonus_void",
+            LedgerEntry.reverses_ledger_id == entry.id,
+        )
+    )
+    if already is not None:
+        raise AppError("这笔加赠金已经撤销过了")
+
+    player = get_player(session, entry.player_id, merchant_id)
+    if int(player.bonus_cents) < amount_cents:
+        raise AppError(
+            f"该笔赠金已被茶水消耗，当前赠金只剩 ¥{format_yuan(player.bonus_cents)}，"
+            "无法撤销；请改为正常加押金"
+        )
+
+    clean = clean_text(note, "备注", 200) or "撤销误加的赠金"
+    cash, cash_again, bonus_before, bonus_after = apply_bonus_delta(
+        session, entry.player_id, -amount_cents, merchant_id=merchant_id
+    )
+    void_entry = _write_entry(
+        session,
+        actor=actor,
+        player_id=entry.player_id,
+        reason="bonus_void",
+        amount_cents=amount_cents,
+        deposit_before=cash,
+        deposit_after=cash_again,
+        bonus_before=bonus_before,
+        bonus_after=bonus_after,
+        batch_id=current_batch_id(session, merchant_id),
+        reverses_ledger_id=entry.id,
+        note=clean,
+    )
+    return {
+        "entry": entry_payload(session, void_entry),
+        "player": _player_payload(session, entry.player_id, merchant_id),
     }
 
 

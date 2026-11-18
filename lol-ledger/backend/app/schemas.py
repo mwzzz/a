@@ -148,6 +148,10 @@ class AmountIn(BaseModel):
     note: str = Field(default="", max_length=200)
 
 
+class BonusVoidIn(BaseModel):
+    note: str = Field(default="", max_length=200)
+
+
 class RechargeCampaignIn(BaseModel):
     threshold_cents: int = Field(gt=0)
     bonus_cents: int = Field(gt=0)
@@ -157,21 +161,6 @@ class TransferIn(BaseModel):
     from_player_id: int
     to_player_id: int
     amount_cents: int
-    note: str = Field(default="", max_length=200)
-
-
-class BatchCreateIn(BaseModel):
-    label: str = Field(default="", max_length=64)
-    note: str = Field(default="", max_length=200)
-
-
-class BatchCloseIn(BaseModel):
-    """交班：茶水营业款上缴管理员，押金余额交给下一保管人。"""
-
-    tea_to_user_id: int
-    deposit_to_user_id: int
-    tea_method: str = Field(default="wechat", max_length=16)
-    deposit_method: str = Field(default="wechat", max_length=16)
     note: str = Field(default="", max_length=200)
 
 

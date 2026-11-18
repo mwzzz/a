@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from app import db as dbmod
 from tests.test_players import add_money, new_player
-from tests.test_sessions import create_session, open_batch
+from tests.test_sessions import create_session
 
 
 def test_deposit_records_pagination(client, admin_headers) -> None:
@@ -44,10 +44,9 @@ def test_deposit_records_filter_by_reason(client, admin_headers) -> None:
 
 
 def test_keyword_matches_player_and_session(client, admin_headers) -> None:
-    batch_id = open_batch(client, admin_headers)
     player = new_player(client, admin_headers, "关键字玩家")
     add_money(client, admin_headers, player["id"], 500)
-    create_session(client, admin_headers, batch_id, [player["id"]], tea=100, name="夜班第一局")
+    create_session(client, admin_headers, [player["id"]], tea=100, name="夜班第一局")
 
     by_player = client.get(
         "/api/v1/records/deposits", params={"keyword": "关键字"}, headers=admin_headers
@@ -86,12 +85,11 @@ def test_transfer_label_and_pair(client, admin_headers) -> None:
 
 
 def test_signed_amount_by_reason(client, admin_headers) -> None:
-    batch_id = open_batch(client, admin_headers)
     player = new_player(client, admin_headers, "符号哥")
     peer = new_player(client, admin_headers, "符号弟")["id"]
     pid = player["id"]
     add_money(client, admin_headers, pid, 5000)
-    create_session(client, admin_headers, batch_id, [pid], tea=200)
+    create_session(client, admin_headers, [pid], tea=200)
     client.post(f"/api/v1/players/{pid}/refunds", json={"amount_cents": 200}, headers=admin_headers)
     client.post(
         "/api/v1/transfers",
@@ -134,9 +132,8 @@ def test_date_range_uses_china_timezone(client, admin_headers) -> None:
 
 
 def test_session_records_include_totals(client, admin_headers) -> None:
-    batch_id = open_batch(client, admin_headers)
     ids = [new_player(client, admin_headers, f"场次{i}")["id"] for i in range(4)]
-    create_session(client, admin_headers, batch_id, ids, tea=250, name="统计局")
+    create_session(client, admin_headers, ids, tea=250, name="统计局")
 
     body = client.get(
         "/api/v1/records/sessions", params={"keyword": "统计局"}, headers=admin_headers
@@ -213,8 +210,8 @@ def test_records_filter_by_operator(
     assert staff_rows["total"] == 4
     assert all(item["operator"]["id"] == staff["id"] for item in staff_rows["items"])
 
-    create_session(client, staff_headers, open_batch(client, staff_headers), [pid], tea=100)
-    create_session(client, admin_headers, open_batch(client, admin_headers), [pid], tea=100)
+    create_session(client, staff_headers, [pid], tea=100)
+    create_session(client, admin_headers, [pid], tea=100)
     staff_sessions = client.get(
         "/api/v1/records/sessions",
         params={"operator_id": staff["id"]},

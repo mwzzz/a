@@ -332,7 +332,7 @@ def _seed_shop(client, headers, admin_id: int, *, tag: str = "极光") -> int:
         json={"amount_cents": 1000, "note": "开卡"},
         headers=headers,
     )
-    create_session(client, headers, 0, [player], tea=300)
+    create_session(client, headers, [player], tea=300)
     settle = client.post(
         "/api/v1/reports/dividends/settle",
         json={"user_ids": [admin_id]},
@@ -428,7 +428,7 @@ def test_purge_clears_target_and_keeps_everything_else(
 
     # 清空后可以直接开局
     fresh = new_player(client, admin_headers, "重新开始")["id"]
-    session = create_session(client, admin_headers, 0, [fresh], tea=200)
+    session = create_session(client, admin_headers, [fresh], tea=200)
     assert session["player_count"] == 1
 
 

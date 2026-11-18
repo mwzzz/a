@@ -271,6 +271,14 @@ def _ddl_for(version: int) -> tuple[list[str], list[str]]:
             statement = LEGACY_LEDGER_DDL
         if version < 12 and "recharge_campaigns" in statement:
             continue
+        if version < 13 and "CREATE TABLE IF NOT EXISTS ledger" in statement:
+            statement = statement.replace(", 'bonus_void'", "")
+            statement = re.sub(
+                r"^\s*reverses_ledger_id[^\n]*\n",
+                "",
+                statement,
+                flags=re.MULTILINE,
+            )
         if version < 4 and "cash_handovers" in statement:
             continue
         if version < 5 and "dividend_settlement" in statement:
@@ -709,6 +717,76 @@ def test_upgrade_v11_adds_bonus_and_campaigns(tmp_path) -> None:
         assert len(list((tmp_path / "backups").glob("pre-v12-*.db"))) == 1
         dbmod.ensure_schema()
         assert len(list((tmp_path / "backups").glob("pre-v12-*.db"))) == 1
+    finally:
+        dbmod.dispose()
+
+
+def test_upgrade_v12_adds_bonus_void(tmp_path) -> None:
+    """v12 → v13：重建 ledger 加宽 reason 白名单、新增 reverses_ledger_id，历史行与赠金拆分原样保留。"""
+    path = tmp_path / "v12.db"
+    statements, indexes = _ddl_for(12)
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.executescript(
+            ";\n".join(statements + indexes) + ";\nPRAGMA user_version = 12;"
+        )
+        conn.execute(
+            "INSERT INTO merchants (name, note, status, created_at, updated_at)"
+            " VALUES ('老商家', '', 'active', ?, ?)",
+            (STAMP, STAMP),
+        )
+        conn.execute(
+            "INSERT INTO users (merchant_id, username, password_hash, display_name, role,"
+            " is_active, password_changed_at, created_at, updated_at)"
+            " VALUES (1, 'boss', 'x', '店长', 'admin', 1, ?, ?, ?)",
+            (STAMP, STAMP, STAMP),
+        )
+        conn.execute(
+            "INSERT INTO players (merchant_id, game_id, deposit_cents, bonus_cents,"
+            " games_played, creator_id, created_at, updated_at)"
+            " VALUES (1, '赠金玩家', 1000, 200, 0, 1, ?, ?)",
+            (STAMP, STAMP),
+        )
+        conn.execute(
+            "INSERT INTO ledger (merchant_id, player_id, reason, amount_cents,"
+            " balance_before_cents, balance_after_cents, bonus_amount_cents,"
+            " deposit_after_cents, bonus_after_cents, operator_id, created_at)"
+            " VALUES (1, 1, 'add_bonus', 200, 1000, 1200, 200, 1000, 200, 1, ?)",
+            (STAMP,),
+        )
+        conn.commit()
+        assert "reverses_ledger_id" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(ledger)").fetchall()
+        }
+    finally:
+        conn.close()
+
+    dbmod.configure_db(path)
+    try:
+        dbmod.ensure_schema()
+        conn = sqlite3.connect(path)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+            assert "reverses_ledger_id" in {
+                row[1] for row in conn.execute("PRAGMA table_info(ledger)").fetchall()
+            }
+            ddl = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'ledger'"
+            ).fetchone()[0]
+            assert "bonus_void" in ddl
+            rows = conn.execute(
+                "SELECT id, reason, bonus_amount_cents, deposit_after_cents,"
+                " bonus_after_cents, reverses_ledger_id FROM ledger ORDER BY id"
+            ).fetchall()
+            assert rows == [(1, "add_bonus", 200, 1000, 200, None)]
+            assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        finally:
+            conn.close()
+
+        assert len(list((tmp_path / "backups").glob("pre-v13-*.db"))) == 1
+        dbmod.ensure_schema()
+        assert len(list((tmp_path / "backups").glob("pre-v13-*.db"))) == 1
     finally:
         dbmod.dispose()
 

@@ -90,7 +90,6 @@ export interface MerchantPurgePreview {
   merchant: { id: number; name: string; status: string }
   counts: MerchantPurgeCounts
   deposit_total_cents: number
-  open_batch: { id: number; opened_at: string } | null
   keep: { accounts: boolean; settings: boolean; merchant: boolean }
   warnings: string[]
 }
@@ -238,9 +237,10 @@ export interface LedgerEntryRow {
   player: { id: number; game_id: string }
   counterparty: { id: number; game_id: string } | null
   session: { id: number; name: string } | null
-  batch: { id: number; label: string; opened_at: string } | null
   operator: UserBrief | null
   transfer_group_id: string | null
+  reverses_ledger_id: number | null
+  voided?: boolean
 }
 
 export interface SessionPlayerRow {
@@ -265,82 +265,6 @@ export interface SessionRow {
   created_at: string
   players: SessionPlayerRow[]
   tea_free_removed?: string[]
-}
-
-export interface BatchSummary {
-  batch_id: number
-  session_count: number
-  player_times: number
-  tea_total_cents: number
-  add_total_cents: number
-  refund_total_cents: number
-  transfer_out_total_cents: number
-  transfer_count: number
-  net_change_cents: number
-  deposit_total_cents: number
-  opening_total_cents: number
-}
-
-export type HandoverMethod = 'wechat' | 'alipay' | 'cash' | 'bank' | 'other'
-
-export interface OperatorStat {
-  user: UserBrief | null
-  session_count: number
-  player_times: number
-  tea_cents: number
-  dividend_cents: number
-}
-
-export interface HandoverInfo {
-  id: number
-  from: UserBrief | null
-  deposit_to: UserBrief | null
-  tea_to: UserBrief | null
-  deposit_cents: number
-  tea_cents: number
-  deposit_method: HandoverMethod
-  deposit_method_label: string
-  tea_method: HandoverMethod
-  tea_method_label: string
-  note: string
-  created_at: string
-}
-
-export interface CustodyInfo {
-  holder: UserBrief | null
-  holder_id: number | null
-  amount_cents: number
-  deposit_cents: number
-  tea_cents: number
-  batch_id: number | null
-}
-
-export interface UserOption {
-  id: number
-  username: string
-  display_name: string
-  role: 'admin' | 'staff'
-}
-
-export interface BatchRow {
-  id: number
-  label: string
-  display_label: string
-  status: 'open' | 'closed'
-  opened_at: string
-  closed_at: string | null
-  note: string
-  opened_by: UserBrief | null
-  closed_by: UserBrief | null
-  session_count: number
-  player_times: number
-  summary: BatchSummary
-  dividend_rate_percent: number
-  dividend_mode: DividendMode
-  dividend_fixed_cents: number
-  operators: OperatorStat[]
-  handover: HandoverInfo | null
-  sessions: SessionRow[]
 }
 
 export interface SettingsPayload {

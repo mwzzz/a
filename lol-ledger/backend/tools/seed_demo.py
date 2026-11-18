@@ -3,7 +3,7 @@
     cd backend
     DB_PATH=data/dev.db python tools/seed_demo.py
 
-会创建：10 个玩家、一个进行中的批次、3 局场次、几笔加押金与划转。
+会创建：12 个玩家、3 局场次、几笔加押金与划转。
 已经有玩家时直接退出，不会重复灌数据。
 """
 
@@ -21,7 +21,7 @@ from sqlalchemy import func, select  # noqa: E402
 from app import db  # noqa: E402
 from app.deps import Actor  # noqa: E402
 from app.models import Merchant, Player, User  # noqa: E402
-from app.services import batches, deposits, players, sessions  # noqa: E402
+from app.services import deposits, players, sessions  # noqa: E402
 
 CN = timezone(timedelta(hours=8))
 
@@ -94,8 +94,6 @@ def main() -> int:
             )
             created.append(player.id)
 
-        batch = batches.open_batch(session, actor, label="", note="演示数据")
-
         for player_id, cents in zip(created, [5000, 3300, 7250, 3100, 4700, 8900, 8750, 4200, 12500, 600, 3000, 1500]):
             deposits.add_deposit(session, actor, player_id, cents, "开卡充值")
 
@@ -105,7 +103,6 @@ def main() -> int:
             sessions.open_session(
                 session,
                 actor,
-                batch_id=batch.id,
                 played_at=moment,
                 tea_fee_cents=200,
                 player_ids=[created[i] for i in team],
@@ -116,7 +113,7 @@ def main() -> int:
         # 10 号玩家初始 6 元、已扣 4 元茶水，只能退剩下的 2 元
         deposits.refund(session, actor, created[9], 100, "退押金")
 
-        print(f"演示数据完成：{len(created)} 个玩家，批次 #{batch.id}，{len(TEAMS)} 局")
+        print(f"演示数据完成：{len(created)} 个玩家，{len(TEAMS)} 局")
     return 0
 
 

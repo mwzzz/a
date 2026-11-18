@@ -330,11 +330,16 @@ def player_detail(session: Session, merchant_id: int, player_id: int) -> dict:
     total_out = sum(
         int(entry.amount_cents)
         for entry in entries
-        if entry.reason not in ("add_deposit", "transfer_in", "add_bonus")
+        if entry.reason
+        not in ("add_deposit", "transfer_in", "add_bonus", "bonus_void")
     )
-    bonus_in = sum(
+    bonus_granted = sum(
         int(entry.amount_cents) for entry in entries if entry.reason == "add_bonus"
     )
+    bonus_voided = sum(
+        int(entry.amount_cents) for entry in entries if entry.reason == "bonus_void"
+    )
+    bonus_in = bonus_granted - bonus_voided
     bonus_used = sum(
         int(entry.bonus_amount_cents) for entry in entries if entry.reason == "normal_deduct"
     )

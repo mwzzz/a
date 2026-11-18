@@ -205,7 +205,7 @@ import {
   formatMoment,
   formatShort,
   momentShortcuts,
-  todayMomentRange,
+  recentMorningRange,
   todayText,
 } from '@/utils/datetime'
 import { formatCents } from '@/utils/money'
@@ -215,7 +215,7 @@ const route = useRoute()
 
 const shortcuts = momentShortcuts()
 const day = todayText()
-const range = ref<[string, string]>(todayMomentRange())
+const range = ref<[string, string]>(recentMorningRange())
 const data = ref<OperatorSummary>({
   date_from: day,
   date_to: day,

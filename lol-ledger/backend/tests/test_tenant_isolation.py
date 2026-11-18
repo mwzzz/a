@@ -107,7 +107,7 @@ def test_transfer_must_stay_inside_one_merchant(
 
 def test_sessions_isolated(client, admin_headers, admin_b_headers) -> None:
     player = new_player(client, admin_headers, "甲店玩家")
-    session = create_session(client, admin_headers, 0, [player["id"]], tea=100)
+    session = create_session(client, admin_headers, [player["id"]], tea=100)
 
     assert client.get(f"/api/v1/sessions/{session['id']}", headers=admin_b_headers).status_code == 404
 
@@ -134,7 +134,7 @@ def test_records_and_overview_isolated(
 ) -> None:
     player = new_player(client, admin_headers, "甲店流水")
     add_money(client, admin_headers, player["id"], 1000)
-    create_session(client, admin_headers, 0, [player["id"]], tea=200)
+    create_session(client, admin_headers, [player["id"]], tea=200)
 
     other = new_player(client, admin_b_headers, "乙店流水")
     add_money(client, admin_b_headers, other["id"], 5000)

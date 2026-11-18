@@ -18,6 +18,7 @@ def reconcile(session: Session, merchant_id: int) -> dict:
     cash_incoming = tuple(reason for reason in INCOMING_REASONS if reason != "add_bonus")
     cash_signed = case(
         (LedgerEntry.reason == "add_bonus", 0),
+        (LedgerEntry.reason == "bonus_void", 0),
         (
             LedgerEntry.reason.in_(cash_incoming),
             LedgerEntry.amount_cents - LedgerEntry.bonus_amount_cents,
@@ -27,6 +28,7 @@ def reconcile(session: Session, merchant_id: int) -> dict:
     bonus_signed = case(
         (LedgerEntry.reason == "add_bonus", LedgerEntry.bonus_amount_cents),
         (LedgerEntry.reason == "normal_deduct", -LedgerEntry.bonus_amount_cents),
+        (LedgerEntry.reason == "bonus_void", -LedgerEntry.amount_cents),
         else_=0,
     )
 

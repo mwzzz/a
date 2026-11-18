@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from app.models import (
     AuditLog,
-    Batch,
     GameSession,
     LedgerEntry,
     Player,
@@ -72,7 +71,6 @@ def entry_row(
     player: Player | None = None,
     operator: User | None = None,
     session: GameSession | None = None,
-    batch: Batch | None = None,
     counterparty: Player | None = None,
     player_game_id: str | None = None,
 ) -> dict:
@@ -89,6 +87,9 @@ def entry_row(
         "bonus_amount_cents": int(entry.bonus_amount_cents),
         "deposit_after_cents": int(entry.deposit_after_cents),
         "bonus_after_cents": int(entry.bonus_after_cents),
+        "reverses_ledger_id": (
+            int(entry.reverses_ledger_id) if entry.reverses_ledger_id is not None else None
+        ),
         "note": entry.note,
         "player": {"id": entry.player_id, "game_id": game_id},
         "counterparty": (
@@ -96,11 +97,6 @@ def entry_row(
         ),
         "session": (
             {"id": session.id, "name": session.name} if session else None
-        ),
-        "batch": (
-            {"id": batch.id, "label": batch.label, "opened_at": batch.opened_at}
-            if batch
-            else None
         ),
         "operator": user_brief(operator),
         "transfer_group_id": entry.transfer_group_id,
@@ -153,7 +149,7 @@ def audit_row(log: AuditLog) -> dict:
 
 def entry_payload(session, entry: LedgerEntry) -> dict:
     """单条流水的完整返回。调用时会话必须开着。"""
-    from app.models import Batch, GameSession, Player, User
+    from app.models import GameSession, Player, User
 
     player = session.get(Player, entry.player_id)
     operator = session.get(User, entry.operator_id)
@@ -163,12 +159,10 @@ def entry_payload(session, entry: LedgerEntry) -> dict:
         else None
     )
     game_session = session.get(GameSession, entry.session_id) if entry.session_id else None
-    batch = session.get(Batch, entry.batch_id) if entry.batch_id else None
     return entry_row(
         entry,
         player=player,
         operator=operator,
         session=game_session,
-        batch=batch,
         counterparty=counterparty,
     )

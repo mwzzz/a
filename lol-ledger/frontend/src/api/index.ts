@@ -29,7 +29,6 @@ import type {
   ToolItemRow,
   ToolListRow,
   ToolListsPayload,
-  UserOption,
   ZjAdminList,
   ZjAdminUser,
   ZjLogs,
@@ -101,6 +100,10 @@ export const moneyApi = {
   addBonus: (id: number, amount_cents: number, note = '') =>
     http
       .post(`/players/${id}/bonus`, { amount_cents, note })
+      .then((res) => res.data as { entry: LedgerEntryRow; player: PlayerRow }),
+  voidBonus: (entryId: number, note = '') =>
+    http
+      .post(`/ledger/entries/${entryId}/void-bonus`, { note })
       .then((res) => res.data as { entry: LedgerEntryRow; player: PlayerRow }),
   refund: (id: number, amount_cents: number, note = '') =>
     http
@@ -189,7 +192,6 @@ export const settingsApi = {
 
 export const accountApi = {
   list: () => http.get('/users').then((res) => res.data as AccountRow[]),
-  options: () => http.get('/users/options').then((res) => res.data as UserOption[]),
   create: (payload: Record<string, unknown>) =>
     http.post('/users', payload).then((res) => res.data as AccountRow),
   update: (id: number, payload: Record<string, unknown>) =>

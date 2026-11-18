@@ -21,7 +21,6 @@ router = APIRouter(prefix="/records", tags=["记录"])
 def deposit_records(
     keyword: str = "",
     player_id: int | None = None,
-    batch_id: int | None = None,
     session_id: int | None = None,
     operator_id: int | None = None,
     reason: str | None = None,
@@ -38,7 +37,6 @@ def deposit_records(
         actor.merchant_id,
         keyword=keyword,
         player_id=player_id,
-        batch_id=batch_id,
         session_id=session_id,
         operator_id=operator_id,
         reason=reason,
