@@ -6,6 +6,43 @@
         共 {{ total }} 人 · 总押金 ¥{{ formatCents(totalDeposit) }}
         <template v-if="totalBonus > 0">· 赠金 ¥{{ formatCents(totalBonus) }}</template>
       </span>
+
+      <div v-if="!auth.isSuperadmin" class="my-shift">
+        <template v-if="!clockedIn">
+          <el-button size="small" type="primary" plain :icon="AlarmClock" @click="onClockIn">
+            上班打卡
+          </el-button>
+          <span class="ms-hint muted small">打卡后这里显示你这一班的场次 / 茶水 / 差额 / 分红</span>
+        </template>
+        <template v-else>
+          <div class="ms-head">
+            <span class="ms-label">
+              我的本班
+              <span class="muted">自 {{ shiftStartText ? formatClock(shiftStartText) : '--' }}</span>
+            </span>
+            <el-button link type="primary" size="small" @click="onClockIn">重新打卡</el-button>
+            <el-button link size="small" :icon="Refresh" @click="loadMyShift">刷新</el-button>
+          </div>
+          <div class="ms-grid">
+            <span>场次 <b>{{ myShift?.session_count ?? 0 }}</b></span>
+            <span>人次 <b>{{ myShift?.player_times ?? 0 }}</b></span>
+            <span>茶水 <b>¥{{ formatCents(myShift?.tea_cents ?? 0) }}</b></span>
+            <span>收 <b>¥{{ formatCents(myShift?.add_deposit_cents ?? 0) }}</b></span>
+            <span>退 <b>¥{{ formatCents(myShift?.refund_cents ?? 0) }}</b></span>
+            <span>
+              差额
+              <b :class="(myShift?.cash_diff_cents ?? 0) < 0 ? 'diff-out' : 'diff-in'">
+                ¥{{ formatCents(myShift?.cash_diff_cents ?? 0) }}
+              </b>
+            </span>
+            <span>分红 <b class="div">¥{{ formatCents(myShift?.dividend_cents ?? 0) }}</b></span>
+          </div>
+          <div v-if="shiftStale" class="ms-hint muted small">
+            打卡已超过 24 小时，数字只算最近 24 小时，建议重新打卡
+          </div>
+        </template>
+      </div>
+
       <div class="spacer"></div>
       <el-button :icon="Upload" @click="importVisible = true">批量导入</el-button>
       <el-button :icon="Download" :loading="exporting" @click="exportPlayers">
@@ -206,13 +243,13 @@
 </template>
 
 <script setup lang="ts">
-import { Download, Plus, Refresh, Search, Upload } from '@element-plus/icons-vue'
+import { AlarmClock, Download, Plus, Refresh, Search, Upload } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { overviewApi, playerApi, settingsApi } from '@/api'
-import type { PlayerRow } from '@/api/types'
+import { overviewApi, playerApi, settingsApi, summaryApi } from '@/api'
+import type { PlayerRow, SummaryTotals } from '@/api/types'
 import DepositBadge from '@/components/common/DepositBadge.vue'
 import DepositDialog from '@/components/players/DepositDialog.vue'
 import PlayerFormDialog from '@/components/players/PlayerFormDialog.vue'
@@ -220,7 +257,7 @@ import PlayerImportDialog from '@/components/players/PlayerImportDialog.vue'
 import PlayerLedgerDrawer from '@/components/players/PlayerLedgerDrawer.vue'
 import TransferDialog from '@/components/players/TransferDialog.vue'
 import { useAuthStore } from '@/stores/auth'
-import { formatFull, relative } from '@/utils/datetime'
+import { formatClock, formatFull, relative } from '@/utils/datetime'
 import { formatCents } from '@/utils/money'
 
 const auth = useAuthStore()
@@ -230,10 +267,10 @@ const router = useRouter()
 const rows = ref<PlayerRow[]>([])
 const total = ref(0)
 const page = ref(1)
-const pageSize = ref(20)
+const pageSize = ref(50)
 const keyword = ref(typeof route.query.keyword === 'string' ? route.query.keyword : '')
 const level = ref('')
-const sort = ref('deposit_asc')
+const sort = ref('last_active_desc')
 const blacklisted = ref<'' | 'only' | 'normal'>('')
 const loading = ref(false)
 
@@ -254,6 +291,75 @@ const active = ref<PlayerRow | null>(null)
 const depositMode = ref<'add' | 'refund' | 'bonus'>('add')
 
 const defaultTransferCents = computed(() => lastTeaCents.value * 10)
+
+// —— 我的本班（纯前端：打卡时间存 localStorage，按当前账号隔离）——
+const clockedIn = ref(false)
+const shiftStartText = ref<string | null>(null)
+const shiftStale = ref(false)
+const myShift = ref<SummaryTotals | null>(null)
+
+const pad2 = (n: number) => String(n).padStart(2, '0')
+function minuteText(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+}
+function shiftKey(): string | null {
+  return auth.user ? `lol_shift_start_${auth.user.id}` : null
+}
+function readClockIn(): string | null {
+  const k = shiftKey()
+  if (!k) return null
+  const v = localStorage.getItem(k)
+  return v && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v) ? v : null
+}
+
+async function loadMyShift() {
+  const clockIn = readClockIn()
+  if (!clockIn || !auth.user) {
+    clockedIn.value = false
+    shiftStartText.value = null
+    myShift.value = null
+    return
+  }
+  clockedIn.value = true
+  // 防呆：窗口最多回溯 24 小时，避免忘打卡把数字虚高（正常班次不受影响）
+  const floor = minuteText(new Date(Date.now() - 24 * 3600 * 1000))
+  shiftStale.value = clockIn <= floor
+  const start = clockIn > floor ? clockIn : floor
+  const end = minuteText(new Date())
+  shiftStartText.value = start
+  try {
+    const data = await summaryApi.operators(start, end)
+    const me = data.rows.find((r) => r.user?.id === auth.user?.id)
+    myShift.value = me
+      ? {
+          session_count: me.session_count,
+          player_times: me.player_times,
+          tea_cents: me.tea_cents,
+          add_deposit_cents: me.add_deposit_cents,
+          refund_cents: me.refund_cents,
+          cash_diff_cents: me.cash_diff_cents,
+          dividend_cents: me.dividend_cents,
+        }
+      : {
+          session_count: 0,
+          player_times: 0,
+          tea_cents: 0,
+          add_deposit_cents: 0,
+          refund_cents: 0,
+          cash_diff_cents: 0,
+          dividend_cents: 0,
+        }
+  } catch {
+    myShift.value = null
+  }
+}
+
+function onClockIn() {
+  const k = shiftKey()
+  if (!k) return
+  localStorage.setItem(k, minuteText(new Date()))
+  void loadMyShift()
+}
 
 let timer: number | undefined
 
@@ -345,12 +451,14 @@ function openLedger(row: PlayerRow) {
 function onSaved() {
   reload()
   loadSummary()
+  loadMyShift()
 }
 
 function onPlayerChanged(player: PlayerRow) {
   const index = rows.value.findIndex((item) => item.id === player.id)
   if (index >= 0) rows.value[index] = player
   loadSummary()
+  loadMyShift()
 }
 
 async function toggleBlacklist(row: PlayerRow) {
@@ -418,7 +526,7 @@ watch(
 )
 
 onMounted(async () => {
-  await Promise.all([load(), loadSummary()])
+  await Promise.all([load(), loadSummary(), loadMyShift()])
   try {
     const settings = await settingsApi.get()
     lastTeaCents.value = settings.last_tea_cents
@@ -432,6 +540,57 @@ onMounted(async () => {
 <style scoped>
 .small {
   font-size: 12px;
+}
+
+.my-shift {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-left: 18px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--app-border);
+  background: var(--app-bg-panel);
+}
+
+.ms-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ms-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ms-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+
+.ms-grid b {
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text);
+}
+
+.ms-hint {
+  font-size: 11px;
+}
+
+.div {
+  color: var(--el-color-primary);
+}
+
+.diff-in {
+  color: var(--el-color-success);
+}
+
+.diff-out {
+  color: var(--el-color-warning);
 }
 
 .ops {

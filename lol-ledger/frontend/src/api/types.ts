@@ -190,6 +190,7 @@ export type DividendMode = 'percent' | 'fixed'
 
 export interface DividendPreviewItem {
   user: UserBrief | null
+  is_active: boolean
   pending: DividendTotals
   settled: DividendTotals
   status: 'pending' | 'settled' | 'empty'
@@ -204,6 +205,7 @@ export interface DividendPreview {
     pending_tea_cents: number
     operator_count: number
     session_count: number
+    claimed_session_count: number
   }
   warnings: string[]
 }
@@ -219,6 +221,11 @@ export interface DividendSettlementRow {
   note: string
   settled_by: UserBrief | null
   created_at: string
+  status: 'live' | 'voided'
+  voided_at: string | null
+  voided_by: UserBrief | null
+  void_note: string
+  claimed_session_count: number
 }
 
 export interface LedgerEntryRow {

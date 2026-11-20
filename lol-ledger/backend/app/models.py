@@ -246,6 +246,24 @@ class DividendSettlement(Base):
     note: Mapped[str] = mapped_column(String(200), default="")
     settled_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[str] = mapped_column(String(40))
+    voided_at: Mapped[str | None] = mapped_column(String(40), default=None)
+    voided_by: Mapped[int | None] = mapped_column(Integer, default=None)
+    void_note: Mapped[str] = mapped_column(String(200), default="")
+
+
+class DividendSettlementSession(Base):
+    """结算认领的每一局。session_id 在未冲销的行里唯一，一局不可能被付两次。"""
+
+    __tablename__ = "dividend_settlement_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    settlement_id: Mapped[int] = mapped_column(ForeignKey("dividend_settlements.id"))
+    session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    merchant_id: Mapped[int] = mapped_column(ForeignKey("merchants.id"))
+    tea_cents: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[str] = mapped_column(String(40))
+    voided_at: Mapped[str | None] = mapped_column(String(40), default=None)
 
 
 class DividendSettlementBatch(Base):

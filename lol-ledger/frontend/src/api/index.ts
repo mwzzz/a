@@ -173,10 +173,14 @@ export const dividendApi = {
     http
       .post('/reports/dividends/settle', payload)
       .then((res) => res.data as DividendSettlementRow[]),
-  settlements: (page = 1, page_size = 10) =>
+  settlements: (page = 1, page_size = 10, status?: 'all' | 'live' | 'voided') =>
     http
-      .get('/reports/dividends/settlements', { params: { page, page_size } })
+      .get('/reports/dividends/settlements', { params: { page, page_size, status } })
       .then((res) => res.data as Paged<DividendSettlementRow>),
+  voidSettlement: (id: number, note: string) =>
+    http
+      .post(`/reports/dividends/settlements/${id}/void`, { note })
+      .then((res) => res.data as DividendSettlementRow),
 }
 
 export const overviewApi = {

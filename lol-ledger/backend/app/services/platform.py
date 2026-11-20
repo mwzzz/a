@@ -21,6 +21,7 @@ from app.models import (
     CashHandover,
     DividendSettlement,
     DividendSettlementBatch,
+    DividendSettlementSession,
     GameSession,
     LedgerEntry,
     Merchant,
@@ -461,6 +462,11 @@ def _purge_counts(session: Session, merchant_id: int) -> dict:
             .select_from(DividendSettlement)
             .where(DividendSettlement.merchant_id == merchant_id)
         ),
+        "settlement_claims": count(
+            select(func.count())
+            .select_from(DividendSettlementSession)
+            .where(DividendSettlementSession.merchant_id == merchant_id)
+        ),
     }
 
 
@@ -547,6 +553,11 @@ def purge_merchant_data(
 
     session_ids = select(GameSession.id).where(GameSession.merchant_id == merchant_id)
     # 顺序：分红/交接 → 场次明细 → 流水 → 场次 → 班次 → 玩家
+    session.execute(
+        delete(DividendSettlementSession).where(
+            DividendSettlementSession.merchant_id == merchant_id
+        )
+    )
     session.execute(
         delete(DividendSettlementBatch).where(
             DividendSettlementBatch.merchant_id == merchant_id

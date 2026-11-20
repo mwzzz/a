@@ -283,6 +283,8 @@ def _ddl_for(version: int) -> tuple[list[str], list[str]]:
             continue
         if version < 5 and "dividend_settlement" in statement:
             continue
+        if version < 14 and "dividend_settlement_sessions" in statement:
+            continue
         if version < 10 and ("tool_lists" in statement or "tool_items" in statement):
             continue
         if version < 7 and "queue_entries" in statement:
@@ -300,6 +302,15 @@ def _ddl_for(version: int) -> tuple[list[str], list[str]]:
                 statement,
                 flags=re.MULTILINE,
             )
+        if version < 14:
+            statement = re.sub(
+                r"^\s*voided_(at|by)\s+[^\n]*\n", "", statement, flags=re.MULTILINE
+            )
+            statement = re.sub(
+                r"^\s*void_note[^\n]*\n", "", statement, flags=re.MULTILINE
+            )
+            # 剥掉最后一列后，上一行留下的悬空逗号会让建表语句报错
+            statement = re.sub(r",\s*\n\)", "\n)", statement)
         if version < 3:
             statement = re.sub(
                 r"^\s*is_system\s+INTEGER[^\n]*\n", "", statement, flags=re.MULTILINE
@@ -787,6 +798,101 @@ def test_upgrade_v12_adds_bonus_void(tmp_path) -> None:
         assert len(list((tmp_path / "backups").glob("pre-v13-*.db"))) == 1
         dbmod.ensure_schema()
         assert len(list((tmp_path / "backups").glob("pre-v13-*.db"))) == 1
+    finally:
+        dbmod.dispose()
+
+
+def test_upgrade_v13_claims_settled_sessions(tmp_path) -> None:
+    """v13 → v14：历史结算按场次回填认领，结算之后补录的局必须留在待结算外。"""
+    path = tmp_path / "v13.db"
+    statements, indexes = _ddl_for(13)
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.executescript(
+            ";\n".join(statements + indexes) + ";\nPRAGMA user_version = 13;"
+        )
+        conn.execute(
+            "INSERT INTO merchants (name, note, status, created_at, updated_at)"
+            " VALUES ('老商家', '', 'active', ?, ?)",
+            (STAMP, STAMP),
+        )
+        conn.execute(
+            "INSERT INTO users (merchant_id, username, password_hash, display_name, role,"
+            " is_active, password_changed_at, created_at, updated_at)"
+            " VALUES (1, 'boss', 'x', '店长', 'admin', 1, ?, ?, ?)",
+            (STAMP, STAMP, STAMP),
+        )
+        # 三局在结算之前创建（结算行确实付过钱），一局是结算之后补录进同一天的
+        for index, played_at, created_at in (
+            (1, "2026-11-01T10:00:00+08:00", "2026-11-01T10:00:00+08:00"),
+            (2, "2026-11-02T10:00:00+08:00", "2026-11-02T10:00:00+08:00"),
+            (3, "2026-11-03T10:00:00+08:00", "2026-11-03T10:00:00+08:00"),
+            (4, "2026-11-02T18:00:00+08:00", "2026-11-07T09:00:00+08:00"),
+        ):
+            conn.execute(
+                "INSERT INTO sessions (merchant_id, name, played_at, tea_fee_cents, note,"
+                " operator_id, player_count, created_at)"
+                " VALUES (1, ?, ?, 300, '', 1, 2, ?)",
+                (f"第{index}局", played_at, created_at),
+            )
+        # 只存到日期的历史结算行，覆盖 11-01 ~ 11-03，实付 3 局
+        conn.execute(
+            "INSERT INTO dividend_settlements (merchant_id, user_id, username_snapshot,"
+            " display_name_snapshot, period_start, period_end, session_count, player_times,"
+            " tea_cents, dividend_cents, note, settled_by, created_at)"
+            " VALUES (1, 1, 'boss', '店长', '2026-11-01', '2026-11-03', 3, 6, 1800, 900, '',"
+            " 1, '2026-11-05T00:58:28+08:00')",
+        )
+        conn.commit()
+        assert "dividend_settlement_sessions" not in {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    dbmod.configure_db(path)
+    try:
+        dbmod.ensure_schema()
+        conn = sqlite3.connect(path)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+            columns = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(dividend_settlements)"
+                ).fetchall()
+            }
+            assert {"voided_at", "voided_by", "void_note"} <= columns
+            claims = conn.execute(
+                "SELECT settlement_id, session_id, tea_cents, voided_at"
+                " FROM dividend_settlement_sessions ORDER BY session_id"
+            ).fetchall()
+            assert [row[1] for row in claims] == [1, 2, 3], "补录的第 4 局不该被认领"
+            assert all(row[0] == 1 and row[2] == 600 and row[3] is None for row in claims)
+            # 历史结算的金额与区间一个字都不动
+            assert conn.execute(
+                "SELECT period_start, period_end, session_count, dividend_cents"
+                " FROM dividend_settlements WHERE id = 1"
+            ).fetchone() == ("2026-11-01", "2026-11-03", 3, 900)
+            assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        finally:
+            conn.close()
+
+        assert len(list((tmp_path / "backups").glob("pre-v14-*.db"))) == 1
+        dbmod.ensure_schema()
+        conn = sqlite3.connect(path)
+        try:
+            assert (
+                conn.execute("SELECT COUNT(*) FROM dividend_settlement_sessions").fetchone()[0]
+                == 3
+            )
+        finally:
+            conn.close()
+        assert len(list((tmp_path / "backups").glob("pre-v14-*.db"))) == 1
     finally:
         dbmod.dispose()
 

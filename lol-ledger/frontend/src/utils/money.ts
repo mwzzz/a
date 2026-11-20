@@ -19,6 +19,11 @@ export function formatCents(cents: number | null | undefined): string {
   return `${sign}${Math.trunc(abs / 100)}.${String(abs % 100).padStart(2, '0')}`
 }
 
+/** 元整数省略 .00、有小数才保留：249.00→"249"、157.50→"157.5"。工资汇总成稿文字用。 */
+export function formatYuanShort(cents: number | null | undefined): string {
+  return String(Number((Number(cents || 0) / 100).toFixed(2)))
+}
+
 /** 总余额（押金 + 赠金）；有赠金时括号里补现金押金。 */
 export function formatBalance(
   balanceCents: number | null | undefined,

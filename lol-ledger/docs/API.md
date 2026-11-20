@@ -198,6 +198,21 @@ Authorization: Bearer <access_token>
 
 涉及接口：`/summary/operators`、`/records/*`、`/sessions`、`/reports/dividends/*`。
 
+右边界一律补到该精度的最后一秒：`2026-11-06` → `23:59:59`，`2026-11-06T09:30` → `09:30:59`。
+
+## 分红结算的幂等口径（重要）
+
+幂等发生在**场次**上，不在区间上：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/reports/dividends/preview` | 返回区间内每位操作人「未被认领」的场次与分红；`totals.claimed_session_count` 是本区间已结算过的局数 |
+| POST | `/reports/dividends/settle` | 结算并逐局写入 `dividend_settlement_sessions`；未冲销的认领行里 `session_id` 唯一（DB 级唯一索引），同一局不可能发两次 |
+| GET | `/reports/dividends/settlements?status=all\|live\|voided` | 结算记录；每行带 `status`、`voided_at/by`、`void_note`、`claimed_session_count` |
+| POST | `/reports/dividends/settlements/{id}/void` | `{note}`，仅管理员。软冲销：把该笔结算的金额保持原样、只标记 `voided_at`，同时释放它认领的场次回到待结算，写审计 `dividend_settlement_void` |
+
+因此区间重叠不再返回 0：已发过的局被跳过，剩下的（含结算之后补录进同一区间的）照常待结。历史结算行只存到日期时，比较前用 `timeutil.bound_start_text` / `bound_end_text` 归一化；解析不了的行跳过，不影响整页。
+
 ## 约定
 
 - 时间格式 `2026-10-30T20:04:12+08:00`，字典序即时间序。

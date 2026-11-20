@@ -69,10 +69,19 @@
     <div class="panel">
       <div class="section-head">
         <div class="section-title">按操作人</div>
+        <div class="spacer"></div>
         <span class="muted small">差额为正 = 店员应交，为负 = 店长应补</span>
+        <el-button size="small" @click="generateReport">生成工资汇总</el-button>
       </div>
 
-      <el-table v-if="data.rows.length" :data="data.rows" class="desktop-only" style="width: 100%">
+      <el-table
+        v-if="displayRows.length"
+        :data="displayRows"
+        show-summary
+        :summary-method="summaryMethod"
+        class="desktop-only"
+        style="width: 100%"
+      >
         <el-table-column label="操作人" min-width="150">
           <template #default="{ row }">
             <div class="cell-main">{{ row.user?.display_name || '未知' }}</div>
@@ -111,8 +120,8 @@
         </el-table-column>
       </el-table>
 
-      <div v-if="data.rows.length" class="mobile-only summary-cards">
-        <div v-for="row in data.rows" :key="row.user?.id || 'x'" class="summary-card">
+      <div v-if="displayRows.length" class="mobile-only summary-cards">
+        <div v-for="row in displayRows" :key="row.user?.id || 'x'" class="summary-card">
           <div class="sc-head">
             <div class="cell-main">{{ row.user?.display_name || '未知' }}</div>
             <span :class="row.cash_diff_cents < 0 ? 'diff-out' : 'diff-in'">
@@ -130,7 +139,24 @@
         </div>
       </div>
 
-      <el-empty v-if="!data.rows.length" description="这个区间没有记录" :image-size="88" />
+      <div v-if="displayRows.length" class="mobile-only summary-total">
+        总计：场次 {{ data.totals.session_count }} ·
+        茶水 ¥{{ formatCents(data.totals.tea_cents) }} ·
+        收 ¥{{ formatCents(data.totals.add_deposit_cents) }} ·
+        退 ¥{{ formatCents(data.totals.refund_cents) }} ·
+        差额 ¥{{ formatCents(data.totals.cash_diff_cents) }} ·
+        分红 ¥{{ formatCents(data.totals.dividend_cents) }}
+      </div>
+
+      <el-empty v-if="!displayRows.length" description="这个区间没有记录" :image-size="88" />
+
+      <div v-if="reportVisible" class="report-box">
+        <el-input v-model="reportText" type="textarea" :rows="4" readonly resize="none" />
+        <div class="report-actions">
+          <el-button size="small" type="primary" @click="copyReport">复制</el-button>
+          <el-button size="small" @click="reportVisible = false">收起</el-button>
+        </div>
+      </div>
     </div>
 
     <div class="panel">
@@ -194,13 +220,20 @@
 </template>
 
 <script setup lang="ts">
+import { ElMessage } from 'element-plus'
 import { Refresh, VideoPlay } from '@element-plus/icons-vue'
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { sessionApi, settingsApi, summaryApi } from '@/api'
-import type { OperatorSummary, SessionPlayerRow, SessionRow } from '@/api/types'
+import type {
+  OperatorSummary,
+  OperatorSummaryRow,
+  SessionPlayerRow,
+  SessionRow,
+} from '@/api/types'
 import NewSessionDialog from '@/components/batches/NewSessionDialog.vue'
+import { useAppStore } from '@/stores/app'
 import {
   formatMoment,
   formatShort,
@@ -208,14 +241,26 @@ import {
   recentMorningRange,
   todayText,
 } from '@/utils/datetime'
-import { formatCents } from '@/utils/money'
+import { formatCents, formatYuanShort } from '@/utils/money'
 
 const router = useRouter()
 const route = useRoute()
+const app = useAppStore()
+
+const MOMENT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/
+
+/** 区间来源优先级：URL ?from&to > 上次记忆(store) > 默认。 */
+function initialRange(): [string, string] {
+  const from = typeof route.query.from === 'string' ? route.query.from : ''
+  const to = typeof route.query.to === 'string' ? route.query.to : ''
+  if (MOMENT_RE.test(from) && MOMENT_RE.test(to)) return [from, to]
+  if (app.summaryRange) return app.summaryRange
+  return recentMorningRange()
+}
 
 const shortcuts = momentShortcuts()
 const day = todayText()
-const range = ref<[string, string]>(recentMorningRange())
+const range = ref<[string, string]>(initialRange())
 const data = ref<OperatorSummary>({
   date_from: day,
   date_to: day,
@@ -244,6 +289,13 @@ let loadSeq = 0
 
 async function load() {
   const [from, to] = range.value || [day, day]
+  // 选定的区间持久化并同步到 URL，供切换页面/刷新/分享后恢复
+  if (MOMENT_RE.test(from) && MOMENT_RE.test(to)) {
+    app.setSummaryRange([from, to])
+    if (route.query.from !== from || route.query.to !== to) {
+      router.replace({ query: { ...route.query, from, to } })
+    }
+  }
   const seq = ++loadSeq
   loading.value = true
   error.value = false
@@ -266,6 +318,95 @@ async function load() {
 
 function openSession() {
   sessionVisible.value = true
+}
+
+// 列表展示层：隐藏「差额与分红都为 0」的人，并按场次倒序（不改动后端口径与合计）
+const displayRows = computed<OperatorSummaryRow[]>(() =>
+  data.value.rows
+    .filter((row) => !(row.cash_diff_cents === 0 && row.dividend_cents === 0))
+    .slice()
+    .sort(
+      (a, b) =>
+        b.session_count - a.session_count ||
+        b.cash_diff_cents - a.cash_diff_cents ||
+        (a.user?.id ?? 0) - (b.user?.id ?? 0),
+    ),
+)
+
+// 底部「总计」取后端 data.totals（全部行），保证被隐藏的人绝不影响合计
+function summaryMethod({ columns }: { columns: unknown[] }): string[] {
+  const t = data.value.totals
+  return columns.map((_column, index) => {
+    switch (index) {
+      case 0:
+        return '总计'
+      case 1:
+        return String(t.session_count)
+      case 2:
+        return String(t.player_times)
+      case 3:
+        return `¥${formatCents(t.tea_cents)}`
+      case 4:
+        return `¥${formatCents(t.add_deposit_cents)}`
+      case 5:
+        return `¥${formatCents(t.refund_cents)}`
+      case 6:
+        return `¥${formatCents(t.cash_diff_cents)}`
+      case 7:
+        return `¥${formatCents(t.dividend_cents)}`
+      default:
+        return ''
+    }
+  })
+}
+
+const reportVisible = ref(false)
+const reportText = ref('')
+
+function startDayLabel(from: string): string {
+  return `${Number(from.slice(5, 7))}月${Number(from.slice(8, 10))}日`
+}
+
+function generateReport() {
+  const [from, to] = range.value || [day, day]
+  const dayLabel = startDayLabel(from)
+  const head = `${formatShort(from)}至${formatShort(to)}（${dayLabel}）工资与差额：`
+  const parts = displayRows.value.map((row) => {
+    const name = row.user?.display_name || row.user?.username || '未知'
+    let text = `${name}工资${formatYuanShort(row.dividend_cents)}`
+    if (row.cash_diff_cents > 0) text += ` 应交${formatYuanShort(row.cash_diff_cents)}`
+    else if (row.cash_diff_cents < 0) text += ` 应补${formatYuanShort(-row.cash_diff_cents)}`
+    return text
+  })
+  const tail = `${dayLabel}总计工资支出${formatYuanShort(data.value.totals.dividend_cents)}`
+  reportText.value = parts.length ? `${head}${parts.join('，')}，${tail}` : `${head}无，${tail}`
+  reportVisible.value = true
+  // 生成即自动复制，省去再点一次「复制」
+  void copyReport()
+}
+
+async function copyReport() {
+  const text = reportText.value
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('已复制到剪贴板')
+    return
+  } catch {
+    // http/非安全上下文下 navigator.clipboard 不可用，回退到 execCommand
+  }
+  const el = document.createElement('textarea')
+  el.value = text
+  el.style.position = 'fixed'
+  el.style.opacity = '0'
+  document.body.appendChild(el)
+  el.select()
+  try {
+    document.execCommand('copy')
+    ElMessage.success('已复制到剪贴板')
+  } catch {
+    ElMessage.warning('复制失败，请手动选中文本复制')
+  }
+  document.body.removeChild(el)
 }
 
 async function onSessionCreated() {
@@ -340,6 +481,27 @@ watch(
 
 .div {
   color: var(--el-color-primary);
+}
+
+.summary-total {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--app-border);
+  background: var(--app-bg-panel);
+  font-size: 13px;
+  color: var(--app-text-muted);
+  line-height: 1.7;
+}
+
+.report-box {
+  margin-top: 12px;
+}
+
+.report-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .summary-cards,

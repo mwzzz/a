@@ -127,6 +127,10 @@ class DividendSettleIn(BaseModel):
     note: str = Field(default="", max_length=200)
 
 
+class DividendVoidIn(BaseModel):
+    note: str = Field(default="", max_length=200)
+
+
 class PlayerCreateIn(BaseModel):
     game_id: str = Field(min_length=1, max_length=64)
     nickname: str = Field(default="", max_length=64)

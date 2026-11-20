@@ -37,11 +37,15 @@ from pathlib import Path
 
 from app import db
 from app.defaults import DEFAULT_TOOL_LISTS
-from app.timeutil import now_text
+from app.timeutil import (
+    bound_end_text_safe,
+    bound_start_text_safe,
+    now_text,
+)
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 DEFAULT_MERCHANT_NAME = "默认商家"
 PLATFORM_MERCHANT_NAME = "平台管理"
 DEFAULT_DIVIDEND_RATE = 50
@@ -112,10 +116,14 @@ CREATE TABLE IF NOT EXISTS dividend_settlements (
     dividend_cents        INTEGER NOT NULL DEFAULT 0,
     note                  TEXT    NOT NULL DEFAULT '',
     settled_by            INTEGER NOT NULL REFERENCES users(id),
-    created_at            TEXT    NOT NULL
+    created_at            TEXT    NOT NULL,
+    voided_at             TEXT,
+    voided_by             INTEGER,
+    void_note             TEXT    NOT NULL DEFAULT ''
 )
 """
 
+# v14 起分红改按场次认领，这张 v5 的班次表已作废：不读、不删，只留作历史。
 DIVIDEND_SETTLEMENT_BATCH_TABLE = """
 CREATE TABLE IF NOT EXISTS dividend_settlement_batches (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,6 +138,34 @@ CREATE TABLE IF NOT EXISTS dividend_settlement_batches (
     UNIQUE (batch_id, user_id)
 )
 """
+
+DIVIDEND_SETTLEMENT_SESSION_TABLE = """
+CREATE TABLE IF NOT EXISTS dividend_settlement_sessions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    settlement_id INTEGER NOT NULL REFERENCES dividend_settlements(id),
+    session_id    INTEGER NOT NULL REFERENCES sessions(id),
+    user_id       INTEGER NOT NULL REFERENCES users(id),
+    merchant_id   INTEGER NOT NULL REFERENCES merchants(id),
+    tea_cents     INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT    NOT NULL,
+    voided_at     TEXT
+)
+"""
+
+DIVIDEND_CLAIM_INDEX_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_dss_live_session
+        ON dividend_settlement_sessions(session_id) WHERE voided_at IS NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_dss_settlement
+        ON dividend_settlement_sessions(settlement_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_dss_merchant_user
+        ON dividend_settlement_sessions(merchant_id, user_id, voided_at)
+    """,
+)
 
 DIVIDEND_INDEX_STATEMENTS: tuple[str, ...] = (
     """
@@ -479,6 +515,7 @@ TABLE_STATEMENTS: tuple[str, ...] = (
     CASH_HANDOVER_TABLE,
     DIVIDEND_SETTLEMENT_TABLE,
     DIVIDEND_SETTLEMENT_BATCH_TABLE,
+    DIVIDEND_SETTLEMENT_SESSION_TABLE,
     *QUEUE_STATEMENTS,
     *TOOL_STATEMENTS,
     *RECHARGE_CAMPAIGN_STATEMENTS,
@@ -799,7 +836,10 @@ def _create_fresh(conn: sqlite3.Connection) -> None:
         _seed_tool_lists(conn)
         platform_id = _ensure_platform_merchant(conn)
         for statement in (
-            INDEX_STATEMENTS + HANDOVER_INDEX_STATEMENTS + DIVIDEND_INDEX_STATEMENTS
+            INDEX_STATEMENTS
+            + HANDOVER_INDEX_STATEMENTS
+            + DIVIDEND_INDEX_STATEMENTS
+            + DIVIDEND_CLAIM_INDEX_STATEMENTS
         ):
             conn.execute(statement)
         for statement in ZJ_STATEMENTS:
@@ -861,7 +901,10 @@ def _upgrade_v1(conn: sqlite3.Connection, db_path: Path) -> None:
         conn.execute("DELETE FROM batches")
 
         for statement in (
-            INDEX_STATEMENTS + HANDOVER_INDEX_STATEMENTS + DIVIDEND_INDEX_STATEMENTS
+            INDEX_STATEMENTS
+            + HANDOVER_INDEX_STATEMENTS
+            + DIVIDEND_INDEX_STATEMENTS
+            + DIVIDEND_CLAIM_INDEX_STATEMENTS
         ):
             conn.execute(statement)
         for statement in ZJ_STATEMENTS:
@@ -1350,6 +1393,129 @@ def _upgrade_v12_to_v13(conn: sqlite3.Connection, db_path: Path) -> None:
         conn.execute("PRAGMA foreign_keys=ON")
 
 
+def _backfill_settlement_sessions(conn: sqlite3.Connection) -> None:
+    """把历史结算已覆盖的场次登记成「已认领」，防止切到场次级幂等后重复发钱。
+
+    只认领结算发生之前创建的场次：v13 之前按区间去重，结算之后补录进同一区间
+    的活儿从没付过钱，必须继续留在待结算里。金额一律不回算，以冻结的结算行为准。
+    """
+    stamp = now_text()
+    rows = conn.execute(
+        """
+        SELECT id, merchant_id, user_id, period_start, period_end, session_count,
+               created_at
+        FROM dividend_settlements
+        WHERE voided_at IS NULL
+        ORDER BY id
+        """
+    ).fetchall()
+    predicate = """
+        FROM sessions s
+        WHERE s.merchant_id = ? AND s.operator_id = ?
+          AND substr(s.played_at, 1, 19) >= ?
+          AND substr(s.played_at, 1, 19) <= ?
+          AND substr(s.created_at, 1, 19) <= ?
+          AND NOT EXISTS (
+              SELECT 1 FROM dividend_settlement_sessions d
+              WHERE d.session_id = s.id AND d.voided_at IS NULL
+          )
+    """
+    for (
+        settlement_id,
+        merchant_id,
+        user_id,
+        period_start,
+        period_end,
+        stored_count,
+        settled_at,
+    ) in rows:
+        start = bound_start_text_safe(period_start)
+        end = bound_end_text_safe(period_end)
+        if start is None or end is None:
+            logger.warning(
+                "结算 #%s（商家 %s / 用户 %s）区间无法解析，跳过认领回填：%r ~ %r",
+                settlement_id,
+                merchant_id,
+                user_id,
+                period_start,
+                period_end,
+            )
+            continue
+        args = (
+            merchant_id,
+            user_id,
+            start[:19],
+            end[:19],
+            (settled_at or "")[:19],
+        )
+        matched = conn.execute(f"SELECT COUNT(*) {predicate}", args).fetchone()[0]
+        conn.execute(
+            f"""
+            INSERT OR IGNORE INTO dividend_settlement_sessions (
+                settlement_id, session_id, user_id, merchant_id, tea_cents, created_at
+            )
+            SELECT ?, s.id, s.operator_id, s.merchant_id,
+                   s.tea_fee_cents * s.player_count, ?
+            {predicate}
+            """,
+            (settlement_id, stamp, *args),
+        )
+        if matched:
+            logger.info(
+                "结算 #%s 回填认领 %s 场（存量记录 %s 场）",
+                settlement_id,
+                matched,
+                stored_count,
+            )
+        if matched != int(stored_count or 0):
+            logger.warning(
+                "结算 #%s 回填场数 %s 与存量 session_count %s 不一致，"
+                "请人工核对该区间是否需要补发",
+                settlement_id,
+                matched,
+                stored_count,
+            )
+
+
+def _upgrade_v13_to_v14(conn: sqlite3.Connection, db_path: Path) -> None:
+    """v13 → v14：分红幂等从「区间去重」改为「按场次认领」，并支持冲销式撤销。
+
+    只新增一张认领表和三个可空列，历史结算的金额与区间一字不动，非破坏性。
+    """
+    backup = _backup(conn, db_path, "pre-v14")
+    logger.info("迁移前已备份：%s", backup)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not _column_exists(conn, "dividend_settlements", "voided_at"):
+            conn.execute(
+                "ALTER TABLE dividend_settlements ADD COLUMN voided_at TEXT"
+            )
+        if not _column_exists(conn, "dividend_settlements", "voided_by"):
+            conn.execute(
+                "ALTER TABLE dividend_settlements ADD COLUMN voided_by INTEGER"
+            )
+        if not _column_exists(conn, "dividend_settlements", "void_note"):
+            conn.execute(
+                "ALTER TABLE dividend_settlements "
+                "ADD COLUMN void_note TEXT NOT NULL DEFAULT ''"
+            )
+        conn.execute(DIVIDEND_SETTLEMENT_SESSION_TABLE)
+        for statement in DIVIDEND_CLAIM_INDEX_STATEMENTS:
+            conn.execute(statement)
+        _backfill_settlement_sessions(conn)
+        conn.execute("PRAGMA user_version = 14")
+        _assert_foreign_keys(conn)
+        conn.execute("COMMIT")
+        logger.info("v13 → v14 迁移完成：分红按场次认领，支持冲销")
+    except Exception:
+        _rollback(conn)
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
 def ensure_schema() -> None:
     path = db.current_path()
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=20)
@@ -1386,6 +1552,8 @@ def ensure_schema() -> None:
             _upgrade_v11_to_v12(conn, path)
         if version < 13:
             _upgrade_v12_to_v13(conn, path)
+        if version < 14:
+            _upgrade_v13_to_v14(conn, path)
     finally:
         conn.close()
 

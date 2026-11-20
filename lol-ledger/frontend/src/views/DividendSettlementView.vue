@@ -54,6 +54,9 @@
         <span class="muted small">
           {{ formatMoment(preview?.period.start) }} 至
           {{ formatMoment(preview?.period.end) }}，只算还没结算过的场次
+          <template v-if="preview?.totals.claimed_session_count">
+            （本区间已有 {{ preview.totals.claimed_session_count }} 场结算过）
+          </template>
         </span>
       </div>
       <el-table
@@ -66,7 +69,10 @@
         <el-table-column type="selection" width="44" :selectable="isSelectable" />
         <el-table-column label="操作人" min-width="160">
           <template #default="{ row }">
-            <div class="cell-main">{{ row.user?.display_name || '未知' }}</div>
+            <div class="cell-main">
+              {{ row.user?.display_name || '未知' }}
+              <el-tag v-if="!row.is_active" type="info" size="small" effect="plain">已停用</el-tag>
+            </div>
             <div class="cell-sub">
               {{ row.user?.username || '-' }}
               <span v-if="row.pending.dividend_cents > 0"> · {{ modeLabel(row.dividend_mode) }}</span>
@@ -124,7 +130,10 @@
               @change="toggleSelect(row)"
             />
             <div class="preview-name">
-              <div class="cell-main">{{ row.user?.display_name || '未知' }}</div>
+              <div class="cell-main">
+              {{ row.user?.display_name || '未知' }}
+              <el-tag v-if="!row.is_active" type="info" size="small" effect="plain">已停用</el-tag>
+            </div>
               <div class="cell-sub">
                 {{ row.user?.username || '-' }}
                 <span v-if="row.pending.dividend_cents > 0"> · {{ modeLabel(row.dividend_mode) }}</span>
@@ -193,13 +202,38 @@
         <el-table-column label="备注" min-width="140">
           <template #default="{ row }"><span class="muted">{{ row.note || '-' }}</span></template>
         </el-table-column>
+        <el-table-column label="状态" width="90">
+          <template #default="{ row }">
+            <el-tag v-if="row.status === 'voided'" type="info" size="small" effect="plain">已冲销</el-tag>
+            <el-tag v-else type="success" size="small" effect="plain">已生效</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="100" align="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="row.status === 'live'"
+              link
+              type="danger"
+              :loading="voiding"
+              @click="voidOne(row)"
+            >
+              撤销结算
+            </el-button>
+            <span v-else class="muted">{{ row.void_note || '-' }}</span>
+          </template>
+        </el-table-column>
       </el-table>
 
       <div class="history-cards mobile-only">
         <div v-for="row in history" :key="row.id" class="history-card">
           <div class="history-card-head">
-            <span class="cell-main">{{ row.user.display_name || row.user.username }}</span>
-            <b class="good">¥{{ formatCents(row.dividend_cents) }}</b>
+            <span class="cell-main">
+              {{ row.user.display_name || row.user.username }}
+              <el-tag v-if="row.status === 'voided'" type="info" size="small" effect="plain">已冲销</el-tag>
+            </span>
+            <b :class="row.status === 'voided' ? 'muted' : 'good'">
+              ¥{{ formatCents(row.dividend_cents) }}
+            </b>
           </div>
           <div class="history-card-meta">
             <span>{{ formatShort(row.created_at) }}</span>
@@ -208,6 +242,11 @@
             <span>经办 {{ row.settled_by?.display_name || '-' }}</span>
           </div>
           <div v-if="row.note" class="cell-sub">{{ row.note }}</div>
+          <div v-if="row.status === 'live'" class="cell-sub">
+            <el-button link type="danger" :loading="voiding" @click="voidOne(row)">
+              撤销结算
+            </el-button>
+          </div>
         </div>
         <div v-if="!history.length" class="empty-hint">还没有结算记录</div>
       </div>
@@ -230,7 +269,10 @@
         maxlength="200"
         placeholder="备注，比如「微信已转」"
       />
-      <div class="settle-tip">结算后该区间场次不能重复结算，请确认金额后再操作。</div>
+      <div class="settle-tip">
+        结算会把区间内这些场次逐局登记为已结算，之后任何区间都不会再重复发钱；
+        万一算错，可以在下面的结算记录里点「撤销结算」冲销重来。
+      </div>
       <template #footer>
         <el-button @click="settleVisible = false">取消</el-button>
         <el-button type="primary" :loading="settling" @click="submitSettle">确认结算</el-button>
@@ -241,7 +283,7 @@
 
 <script setup lang="ts">
 import { Refresh } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, ref } from 'vue'
 
 import { dividendApi } from '@/api'
@@ -271,7 +313,7 @@ function startOfDay(offset = 0): Date {
 function endOfDay(offset = 0): Date {
   const date = new Date()
   date.setDate(date.getDate() - offset)
-  date.setHours(23, 59, 0, 0)
+  date.setHours(23, 59, 59, 0)
   return date
 }
 
@@ -282,7 +324,7 @@ function startOfMonth(offset = 0): Date {
 
 function endOfMonth(offset = 0): Date {
   const today = new Date()
-  return new Date(today.getFullYear(), today.getMonth() + offset + 1, 0, 23, 59, 0, 0)
+  return new Date(today.getFullYear(), today.getMonth() + offset + 1, 0, 23, 59, 59, 0)
 }
 
 function momentText(value: Date): string {
@@ -305,6 +347,7 @@ const loading = ref(false)
 const selected = ref<DividendPreviewItem[]>([])
 const settleVisible = ref(false)
 const settling = ref(false)
+const voiding = ref(false)
 const note = ref('')
 const history = ref<DividendSettlementRow[]>([])
 const historyTotal = ref(0)
@@ -378,8 +421,7 @@ function openSettle() {
   settleVisible.value = true
 }
 
-async function submitSettle() {
-  settling.value = true
+async function submitSettle() {  settling.value = true
   try {
     await dividendApi.settle({
       user_ids: selected.value.map((item) => item.user?.id as number),
@@ -392,6 +434,39 @@ async function submitSettle() {
     await reload()
   } finally {
     settling.value = false
+  }
+}
+
+/** 冲销一笔结算：场次重新变为待结算，已发出去的钱要线下追回 */
+async function voidOne(row: DividendSettlementRow) {
+  const who = row.user.display_name || row.user.username
+  let reason = ''
+  try {
+    const answer = await ElMessageBox.prompt(
+      `冲销 ${who} 的 ¥${formatCents(row.dividend_cents)}？` +
+        `${row.claimed_session_count} 场会重新变成待结算。` +
+        '已发出去的钱不会自动扣回，需要线下追回。',
+      '撤销结算',
+      {
+        confirmButtonText: '确认冲销',
+        cancelButtonText: '取消',
+        type: 'warning',
+        inputPlaceholder: '备注：为什么要冲销',
+        inputValidator: (text: string) =>
+          (text || '').trim().length >= 2 || '请写清冲销原因',
+      },
+    )
+    reason = String(answer.value || '').trim()
+  } catch {
+    return
+  }
+  voiding.value = true
+  try {
+    await dividendApi.voidSettlement(row.id, reason)
+    ElMessage.success('已冲销，这些场次重新变为待结算')
+    await reload()
+  } finally {
+    voiding.value = false
   }
 }
 

@@ -24,7 +24,7 @@
 
 ## 技术栈与目录
 
-- 后端：FastAPI + SQLAlchemy 2.0 + SQLite（WAL），schema 版本化迁移，当前 **v13**
+- 后端：FastAPI + SQLAlchemy 2.0 + SQLite（WAL），schema 版本化迁移，当前 **v14**
 - 前端：Vue 3 + TypeScript + Element Plus + Pinia + Vite
 - 目录：`backend/app`（`api/` 路由、`services/` 业务、`migrations.py` 建表与迁移）、`backend/tests`、`frontend/src`（`views/` 页面、`api/` 请求与类型）、`deploy/`、`docs/`
 
@@ -62,7 +62,7 @@ cd frontend && npm run typecheck && npm run build
 | 赠金 | `players.bonus_cents`，只能被 `normal_deduct` 扣茶水消耗，先扣赠金再扣现金；不能退款、不能划押。误加的赠金可由管理员或店员撤销（reason `bonus_void`，写一条反向流水只回退赠金、不动现金），仅限**未被茶水消耗且未撤销过**的 `add_bonus` 流水 |
 | 充值活动 | `recharge_campaigns` 按商家配置多档，加押金自动取满足金额的最高档送一次；Excel 导入不触发 |
 | 余额 | 现金 `players.deposit_cents` = 现金流水净额 = 末条 `deposit_after_cents`；赠金 `players.bonus_cents` = 赠金流水净额 = 末条 `bonus_after_cents`；界面总余额 = 两者相加 |
-| 分红幂等 | 同一区间（含重叠）只结算一次；历史记录只存到日期，比较前要归一化成 00:00 / 23:59:59 |
+| 分红幂等 | **每一局只结算一次**：结算时把区间内未认领的场次逐局写进 `dividend_settlement_sessions`（未冲销行里 `session_id` 唯一，DB 级防重复发钱）；区间重叠不再整段清零。历史记录只存到日期，比较前统一用 `timeutil.bound_start_text` / `bound_end_text` 归一化 |
 
 对账不通过（`/api/v1/reconcile`）说明有人绕过接口改过余额，找管理员，不要自行修数据。
 
@@ -79,13 +79,14 @@ cd frontend && npm run typecheck && npm run build
 - **`deploy/*.sh` 必须 755**：权限掉了 systemd 报 `status=203/EXEC`，备份会静默失败。
 - **PowerShell 脚本存 UTF-8 with BOM**：PS 5.1 按 GBK 读会报语法错。
 - **前端 `el-date-picker` 用 `value-format="YYYY-MM-DDTHH:mm"`**，后端 `timeutil.moment_bounds` 同时吃纯日期和分钟。
+- **区间右边界一律走 `timeutil.parse_end_moment`/`bound_end_text`**：纯日期补 `23:59:59`、分钟补 `:59`。自己 `parse_moment(date_to)` 会把边界变成 `23:59:00`，那一分钟的场次两头都不在任何区间里。
 - 单机 1.6G 内存，别起多余进程；uvicorn 单 worker 足够。
 
 ## 历史包袱（不要试图「修好」，先问）
 
 - **v8 取消了开班/交班**，`sessions.batch_id` 已删除，场次与班次的归属**永久丢失**；`batches` 表残留 6 条孤儿数据，新代码完全不读它。
 - **v9 的查战绩（`zj_*` 五张表、`api/zj*.py`）是另一个会话加的模块**，与记账主流程无关，改别的功能时别动。
-- 两条历史分红结算占住了 `11-01~11-05`（极光电竞）和 `11-01~11-06`（面包人）区间，结算这两个区间时对应用户会被跳过，这是预期行为。
+- v14 之前那两条历史分红结算（`11-01~11-05` 极光电竞、`11-01~11-06` 面包人）曾把同区间的人整段跳过；v14 迁移已把它们按场次回填成认领记录，之后补录进同区间的局回到待结算。**不要**再手工改这两行或删认领记录。
 - `services/batches.py` 已随死代码清理删除；`services/custody.py` 只剩 `is_holder()`，仍在用（停用账号时拦截当前保管人），不是死代码。
 
 ## 小工具约定
