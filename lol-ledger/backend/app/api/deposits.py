@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.deps import Actor, get_current_user, get_write_db
+from app.deps import Actor, get_current_user, get_write_db, require_admin
 from app.schemas import AmountIn, BonusVoidIn, TransferIn
 from app.services import deposits as deposit_service
 
@@ -44,6 +44,17 @@ def void_bonus(
     session: Session = Depends(get_write_db),
 ) -> dict:
     return deposit_service.void_bonus(session, actor, entry_id, payload.note)
+
+
+@router.post("/players/{player_id}/bonus/delete", status_code=201)
+def delete_bonus(
+    player_id: int,
+    payload: BonusVoidIn,
+    actor: Actor = Depends(require_admin),
+    session: Session = Depends(get_write_db),
+) -> dict:
+    """管理员一键删除玩家剩余全部赠金（误加且已消耗、无法单笔撤销时的收尾）。"""
+    return deposit_service.delete_bonus(session, actor, player_id, payload.note)
 
 
 @router.post("/players/{player_id}/refunds", status_code=201)

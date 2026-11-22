@@ -68,6 +68,8 @@ def session_records(
         operator_id=operator_id,
         page=page,
         page_size=page_size,
+        actor_id=actor.id,
+        is_admin=actor.is_admin,
     )
 
 

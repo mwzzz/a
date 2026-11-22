@@ -38,6 +38,9 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(16))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_superadmin: Mapped[bool] = mapped_column(Boolean, default=False)
+    salary_player_id: Mapped[int | None] = mapped_column(
+        ForeignKey("players.id"), nullable=True
+    )
     password_changed_at: Mapped[str] = mapped_column(String(40))
     last_login_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     created_at: Mapped[str] = mapped_column(String(40))
@@ -66,7 +69,7 @@ class Player(Base):
     updated_at: Mapped[str] = mapped_column(String(40))
     deleted_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
-    creator: Mapped[User | None] = relationship(User, lazy="joined")
+    creator: Mapped[User | None] = relationship(User, foreign_keys=[creator_id], lazy="joined")
 
 
 class Batch(Base):
@@ -155,6 +158,34 @@ class LedgerEntry(Base):
     transfer_group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     operator_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     note: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[str] = mapped_column(String(40))
+
+
+class SalaryPayment(Base):
+    """发工资记录：把某位店员某「工资日」的分红加押金到其绑定账户。
+
+    每人每工资日只留一条未冲销记录（DB 级防重复发）；撤销写反向退押金并置 voided_at。
+    """
+
+    __tablename__ = "salary_payments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    merchant_id: Mapped[int] = mapped_column(ForeignKey("merchants.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"))
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    wage_date: Mapped[str] = mapped_column(String(10))
+    period_start: Mapped[str] = mapped_column(String(40), default="")
+    period_end: Mapped[str] = mapped_column(String(40), default="")
+    batch_id: Mapped[str] = mapped_column(String(32), default="")
+    ledger_entry_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ledger.id"), nullable=True
+    )
+    note: Mapped[str] = mapped_column(String(200), default="")
+    voided_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    voided_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
     created_at: Mapped[str] = mapped_column(String(40))
 
 

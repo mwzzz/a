@@ -6,12 +6,17 @@
       <router-view />
     </main>
     <BottomNav />
+    <NewSessionDialog
+      v-model="app.sessionDialogVisible"
+      @created="app.notifySessionCreated()"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted } from 'vue'
 
+import NewSessionDialog from '@/components/batches/NewSessionDialog.vue'
 import BottomNav from '@/layouts/BottomNav.vue'
 import ShiftStrip from '@/layouts/ShiftStrip.vue'
 import TopBar from '@/layouts/TopBar.vue'

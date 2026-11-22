@@ -24,6 +24,9 @@ import type {
   PreviewPayload,
   RechargeCampaign,
   ReconcilePayload,
+  SalaryPreview,
+  SalaryPayResult,
+  SalaryNextWindow,
   SessionRow,
   SettingsPayload,
   ToolItemRow,
@@ -105,6 +108,10 @@ export const moneyApi = {
     http
       .post(`/ledger/entries/${entryId}/void-bonus`, { note })
       .then((res) => res.data as { entry: LedgerEntryRow; player: PlayerRow }),
+  deleteBonus: (id: number, note = '') =>
+    http
+      .post(`/players/${id}/bonus/delete`, { note })
+      .then((res) => res.data as { entry: LedgerEntryRow; player: PlayerRow }),
   refund: (id: number, amount_cents: number, note = '') =>
     http
       .post(`/players/${id}/refunds`, { amount_cents, note })
@@ -134,6 +141,25 @@ export const summaryApi = {
       .then((res) => res.data as OperatorSummary),
 }
 
+export const salaryApi = {
+  preview: (date_from: string, date_to: string) =>
+    http
+      .get('/salary/preview', { params: { date_from, date_to } })
+      .then((res) => res.data as SalaryPreview),
+  nextWindow: () =>
+    http.get('/salary/next-window').then((res) => res.data as SalaryNextWindow),
+  bind: (user_id: number, player_id: number | null) =>
+    http
+      .post('/salary/bind', { user_id, player_id })
+      .then((res) => res.data as { user_id: number; salary_player_id: number | null }),
+  pay: (payload: { date_from: string; date_to: string; user_ids: number[]; note?: string }) =>
+    http.post('/salary/pay', payload).then((res) => res.data as SalaryPayResult),
+  void: (batch_id: string, note?: string) =>
+    http
+      .post('/salary/void', { batch_id, note })
+      .then((res) => res.data as { batch_id: string; total_cents: number }),
+}
+
 export const sessionApi = {
   list: (params: Query) =>
     http.get('/sessions', { params }).then((res) => res.data as Paged<SessionRow>),
@@ -144,6 +170,10 @@ export const sessionApi = {
   create: (payload: Record<string, unknown>) =>
     http.post('/sessions', payload).then((res) => res.data as SessionRow),
   get: (id: number) => http.get(`/sessions/${id}`).then((res) => res.data as SessionRow),
+  void: (id: number) =>
+    http
+      .post(`/sessions/${id}/void`, {})
+      .then((res) => res.data as { voided: boolean; session_id: number; restored_player_count: number }),
 }
 
 export const recordApi = {

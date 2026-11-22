@@ -79,17 +79,14 @@
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 
-import { sessionApi, toolListApi } from '@/api'
+import { sessionApi, settingsApi, toolListApi } from '@/api'
 import type { PreviewPayload } from '@/api/types'
 import AiPlayerRecognition from '@/components/batches/AiPlayerRecognition.vue'
 import PlayerSelect from '@/components/common/PlayerSelect.vue'
 import { formatCents } from '@/utils/money'
 import { nameKey } from '@/utils/names'
 
-const props = defineProps<{
-  modelValue: boolean
-  defaultTeaCents: number
-}>()
+const props = defineProps<{ modelValue: boolean }>()
 
 const emit = defineEmits<{
   (event: 'update:modelValue', value: boolean): void
@@ -105,14 +102,11 @@ const preview = ref<PreviewPayload | null>(null)
 const previewLoading = ref(false)
 const previewError = ref(false)
 const teaFreeKeys = ref<string[]>([])
+const teaCents = ref(200)
 
 const filledIds = computed(() => slots.value.filter((item): item is number => Boolean(item)))
 const filledCount = computed(() => filledIds.value.length)
 const selectedIds = computed(() => filledIds.value)
-
-const teaCents = computed(() =>
-  Number.isFinite(props.defaultTeaCents) ? props.defaultTeaCents : 200,
-)
 
 const teaTotalCents = computed(() => teaCents.value * filledCount.value)
 
@@ -152,6 +146,15 @@ async function loadTeaFreePlayers() {
       .filter(Boolean)
   } catch {
     teaFreeKeys.value = []
+  }
+}
+
+async function loadTeaCents() {
+  try {
+    const settings = await settingsApi.get()
+    teaCents.value = Number.isFinite(settings.last_tea_cents) ? settings.last_tea_cents : 200
+  } catch {
+    teaCents.value = 200
   }
 }
 
@@ -206,6 +209,7 @@ watch(
     slots.value = Array(10).fill(null)
     adding.value = null
     void loadTeaFreePlayers()
+    void loadTeaCents()
   },
 )
 

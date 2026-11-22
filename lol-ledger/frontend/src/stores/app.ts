@@ -6,7 +6,7 @@ import type { SummaryTotals } from '@/api/types'
 const THEME_KEY = 'lol_theme'
 const SUMMARY_RANGE_KEY = 'lol_summary_range'
 
-const MOMENT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/
+const MOMENT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/
 
 function readSummaryRange(): [string, string] | null {
   try {
@@ -37,6 +37,8 @@ export const useAppStore = defineStore('app', {
     todayLoaded: false,
     todayLoading: false,
     todayError: false,
+    sessionDialogVisible: false,
+    sessionTick: 0,
   }),
   actions: {
     applyTheme() {
@@ -46,6 +48,13 @@ export const useAppStore = defineStore('app', {
       this.theme = this.theme === 'dark' ? 'light' : 'dark'
       localStorage.setItem(THEME_KEY, this.theme)
       this.applyTheme()
+    },
+    openSessionDialog() {
+      this.sessionDialogVisible = true
+    },
+    notifySessionCreated() {
+      this.sessionTick += 1
+      void this.refreshToday()
     },
     setSummaryRange(range: [string, string]) {
       this.summaryRange = range

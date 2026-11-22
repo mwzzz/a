@@ -205,7 +205,7 @@
 
 <script setup lang="ts">
 import { Refresh, TrendCharts, Upload, VideoPlay, Wallet } from '@element-plus/icons-vue'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { overviewApi } from '@/api'
@@ -223,7 +223,7 @@ const error = ref(false)
 let loadSeq = 0
 
 function openSession() {
-  router.push({ name: 'summary', query: { new: '1' } })
+  app.openSessionDialog()
 }
 
 function goPlayers() {
@@ -260,6 +260,9 @@ async function load() {
 }
 
 onMounted(load)
+
+// 全局「开一局」弹窗创建场次后刷新工作台
+watch(() => app.sessionTick, load)
 </script>
 
 <style scoped>

@@ -167,7 +167,7 @@ function doSearch() {
 }
 
 function openSession() {
-  router.push({ name: 'summary', query: { new: '1' } })
+  app.openSessionDialog()
 }
 
 function onShortcut(event: KeyboardEvent) {

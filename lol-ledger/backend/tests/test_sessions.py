@@ -27,6 +27,10 @@ def create_session(
     return response.json()
 
 
+def void_session(client, headers, session_id: int):
+    return client.post(f"/api/v1/sessions/{session_id}/void", headers=headers)
+
+
 def test_open_session_deducts_and_counts(client, admin_headers) -> None:
     ids = [new_player(client, admin_headers, f"队员{i}")["id"] for i in range(3)]
     for pid in ids:
@@ -243,3 +247,153 @@ def test_blacklisted_player_cannot_open_session(client, admin_headers) -> None:
     )
     assert response.status_code == 400
     assert "黑名单" in response.json()["detail"]
+
+
+def test_void_session_restores_cash_and_removes_game(client, admin_headers) -> None:
+    ids = [new_player(client, admin_headers, f"撤回队{i}")["id"] for i in range(3)]
+    for pid in ids:
+        add_money(client, admin_headers, pid, 1000)
+    game = create_session(client, admin_headers, ids, tea=300)
+    for pid in ids:
+        detail = client.get(f"/api/v1/players/{pid}", headers=admin_headers).json()
+        assert detail["deposit_cents"] == 700
+        assert detail["games_played"] == 1
+
+    response = void_session(client, admin_headers, game["id"])
+    assert response.status_code == 200, response.text
+    assert response.json()["restored_player_count"] == 3
+
+    for pid in ids:
+        detail = client.get(f"/api/v1/players/{pid}", headers=admin_headers).json()
+        assert detail["deposit_cents"] == 1000
+        assert detail["games_played"] == 0
+        reasons = [
+            item["reason"]
+            for item in client.get(
+                f"/api/v1/players/{pid}/ledger", headers=admin_headers
+            ).json()["items"]
+        ]
+        assert reasons == ["add_deposit"]
+
+    listed = client.get("/api/v1/sessions", headers=admin_headers).json()["items"]
+    assert all(item["id"] != game["id"] for item in listed)
+    assert client.get("/api/v1/reconcile", headers=admin_headers).json()["ok"] is True
+
+
+def test_void_session_restores_bonus_first(client, admin_headers) -> None:
+    pid = new_player(client, admin_headers, "撤赠金哥")["id"]
+    add_money(client, admin_headers, pid, 1000)
+    client.post(
+        f"/api/v1/players/{pid}/bonus", json={"amount_cents": 500}, headers=admin_headers
+    )
+    game = create_session(client, admin_headers, [pid], tea=600)
+    detail = client.get(f"/api/v1/players/{pid}", headers=admin_headers).json()
+    assert detail["deposit_cents"] == 900
+    assert detail["bonus_cents"] == 0
+
+    response = void_session(client, admin_headers, game["id"])
+    assert response.status_code == 200, response.text
+    detail = client.get(f"/api/v1/players/{pid}", headers=admin_headers).json()
+    assert detail["deposit_cents"] == 1000
+    assert detail["bonus_cents"] == 500
+    assert detail["games_played"] == 0
+    assert client.get("/api/v1/reconcile", headers=admin_headers).json()["ok"] is True
+
+
+def test_void_session_allows_negative_to_recover(client, admin_headers) -> None:
+    pid = new_player(client, admin_headers, "扣成负")["id"]
+    add_money(client, admin_headers, pid, 100)
+    game = create_session(client, admin_headers, [pid], tea=300)
+    assert client.get(f"/api/v1/players/{pid}", headers=admin_headers).json()[
+        "deposit_cents"
+    ] == -200
+
+    assert void_session(client, admin_headers, game["id"]).status_code == 200
+    detail = client.get(f"/api/v1/players/{pid}", headers=admin_headers).json()
+    assert detail["deposit_cents"] == 100
+    assert detail["games_played"] == 0
+
+
+def test_void_session_zero_tea(client, admin_headers) -> None:
+    pid = new_player(client, admin_headers, "免单撤回")["id"]
+    add_money(client, admin_headers, pid, 500)
+    game = create_session(client, admin_headers, [pid], tea=0)
+    assert client.get(f"/api/v1/players/{pid}", headers=admin_headers).json()[
+        "games_played"
+    ] == 1
+
+    assert void_session(client, admin_headers, game["id"]).status_code == 200
+    detail = client.get(f"/api/v1/players/{pid}", headers=admin_headers).json()
+    assert detail["deposit_cents"] == 500
+    assert detail["games_played"] == 0
+    assert client.get("/api/v1/reconcile", headers=admin_headers).json()["ok"] is True
+
+
+def test_void_blocked_when_player_has_later_entry(client, admin_headers) -> None:
+    pid = new_player(client, admin_headers, "后又充值")["id"]
+    add_money(client, admin_headers, pid, 1000)
+    game = create_session(client, admin_headers, [pid], tea=300)
+    add_money(client, admin_headers, pid, 200)
+
+    response = void_session(client, admin_headers, game["id"])
+    assert response.status_code == 400
+    assert "之后又有了别的流水" in response.json()["detail"]
+    detail = client.get(f"/api/v1/players/{pid}", headers=admin_headers).json()
+    assert detail["deposit_cents"] == 900
+    assert detail["games_played"] == 1
+
+
+def test_void_blocked_after_settlement(client, admin_headers, admin) -> None:
+    pid = new_player(client, admin_headers, "已结算哥")["id"]
+    add_money(client, admin_headers, pid, 1000)
+    game = create_session(client, admin_headers, [pid], tea=300)
+
+    settled = client.post(
+        "/api/v1/reports/dividends/settle",
+        json={"user_ids": [admin["id"]]},
+        headers=admin_headers,
+    )
+    assert settled.status_code == 201, settled.text
+
+    response = void_session(client, admin_headers, game["id"])
+    assert response.status_code == 400
+    assert "结算" in response.json()["detail"]
+
+
+def test_void_requires_owner_or_admin(client, admin_headers, staff_headers, staff) -> None:
+    pid = new_player(client, admin_headers, "越权撤回")["id"]
+    add_money(client, admin_headers, pid, 1000)
+    game = create_session(client, admin_headers, [pid], tea=300)
+
+    blocked = void_session(client, staff_headers, game["id"])
+    assert blocked.status_code == 403
+
+    staff_game = create_session(client, staff_headers, [pid], tea=100)
+    assert void_session(client, admin_headers, staff_game["id"]).status_code == 200
+
+
+def test_void_is_tenant_isolated(client, admin_headers, admin_b_headers) -> None:
+    pid = new_player(client, admin_headers, "别家撤回")["id"]
+    add_money(client, admin_headers, pid, 1000)
+    game = create_session(client, admin_headers, [pid], tea=300)
+
+    other = void_session(client, admin_b_headers, game["id"])
+    assert other.status_code == 404
+    assert client.get(f"/api/v1/players/{pid}", headers=admin_headers).json()[
+        "deposit_cents"
+    ] == 700
+
+
+def test_voidable_flag_in_session_list(client, admin_headers) -> None:
+    pid = new_player(client, admin_headers, "标记哥")["id"]
+    add_money(client, admin_headers, pid, 1000)
+    game = create_session(client, admin_headers, [pid], tea=300)
+
+    def _flag(session_id: int) -> bool:
+        items = client.get("/api/v1/sessions", headers=admin_headers).json()["items"]
+        return next(item for item in items if item["id"] == session_id)["voidable"]
+
+    assert _flag(game["id"]) is True
+    add_money(client, admin_headers, pid, 200)
+    assert _flag(game["id"]) is False
+

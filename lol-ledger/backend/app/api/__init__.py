@@ -14,6 +14,7 @@ from app.api import (
     players,
     queue,
     records,
+    salary,
     sessions,
     settings as settings_api,
     summary,
@@ -32,6 +33,7 @@ api_router.include_router(players.router)
 api_router.include_router(deposits.router)
 api_router.include_router(sessions.router)
 api_router.include_router(summary.router)
+api_router.include_router(salary.router)
 api_router.include_router(records.router)
 api_router.include_router(overview.router)
 api_router.include_router(queue.router)

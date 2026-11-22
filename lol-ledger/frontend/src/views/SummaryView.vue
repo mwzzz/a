@@ -16,8 +16,8 @@
         <el-date-picker
           v-model="range"
           type="datetimerange"
-          value-format="YYYY-MM-DDTHH:mm"
-          format="MM-DD HH:mm"
+          value-format="YYYY-MM-DDTHH:mm:ss"
+          format="MM-DD HH:mm:ss"
           range-separator="至"
           start-placeholder="开始时间"
           end-placeholder="结束时间"
@@ -27,7 +27,7 @@
           @change="load"
         />
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
-        <el-button type="primary" :icon="VideoPlay" @click="openSession">开一局</el-button>
+        <el-button type="primary" :icon="VideoPlay" @click="app.openSessionDialog()">开一局</el-button>
       </div>
     </div>
 
@@ -71,7 +71,11 @@
         <div class="section-title">按操作人</div>
         <div class="spacer"></div>
         <span class="muted small">差额为正 = 店员应交，为负 = 店长应补</span>
+        <el-button v-if="auth.isAdmin" size="small" @click="continueFromLastPay">续接上次发薪</el-button>
         <el-button size="small" @click="generateReport">生成工资汇总</el-button>
+        <el-button v-if="auth.isAdmin" size="small" type="primary" @click="payVisible = true">
+          发工资
+        </el-button>
       </div>
 
       <el-table
@@ -151,7 +155,7 @@
       <el-empty v-if="!displayRows.length" description="这个区间没有记录" :image-size="88" />
 
       <div v-if="reportVisible" class="report-box">
-        <el-input v-model="reportText" type="textarea" :rows="4" readonly resize="none" />
+        <el-input v-model="reportText" type="textarea" :rows="reportRows" readonly resize="none" />
         <div class="report-actions">
           <el-button size="small" type="primary" @click="copyReport">复制</el-button>
           <el-button size="small" @click="reportVisible = false">收起</el-button>
@@ -211,10 +215,11 @@
     </div>
     </template>
 
-    <NewSessionDialog
-      v-model="sessionVisible"
-      :default-tea-cents="defaultTeaCents"
-      @created="onSessionCreated"
+    <SalaryPayDialog
+      v-model="payVisible"
+      :date-from="range[0]"
+      :date-to="range[1]"
+      @paid="load"
     />
   </div>
 </template>
@@ -225,37 +230,40 @@ import { Refresh, VideoPlay } from '@element-plus/icons-vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { sessionApi, settingsApi, summaryApi } from '@/api'
+import { salaryApi, sessionApi, summaryApi } from '@/api'
 import type {
   OperatorSummary,
   OperatorSummaryRow,
   SessionPlayerRow,
   SessionRow,
 } from '@/api/types'
-import NewSessionDialog from '@/components/batches/NewSessionDialog.vue'
+import SalaryPayDialog from '@/components/summary/SalaryPayDialog.vue'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 import {
   formatMoment,
   formatShort,
   momentShortcuts,
   recentMorningRange,
   todayText,
+  withSeconds,
 } from '@/utils/datetime'
 import { formatCents, formatYuanShort } from '@/utils/money'
 
 const router = useRouter()
 const route = useRoute()
 const app = useAppStore()
+const auth = useAuthStore()
 
-const MOMENT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/
+const MOMENT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/
 
-/** 区间来源优先级：URL ?from&to > 上次记忆(store) > 默认。 */
+/** 区间来源优先级：URL ?from&to > 上次记忆(store) > 默认。分钟值补齐成秒级。 */
 function initialRange(): [string, string] {
   const from = typeof route.query.from === 'string' ? route.query.from : ''
   const to = typeof route.query.to === 'string' ? route.query.to : ''
-  if (MOMENT_RE.test(from) && MOMENT_RE.test(to)) return [from, to]
-  if (app.summaryRange) return app.summaryRange
-  return recentMorningRange()
+  if (MOMENT_RE.test(from) && MOMENT_RE.test(to)) return [withSeconds(from), withSeconds(to)]
+  if (app.summaryRange) return [withSeconds(app.summaryRange[0]), withSeconds(app.summaryRange[1])]
+  return recentMorningRange(1)
 }
 
 const shortcuts = momentShortcuts()
@@ -280,8 +288,7 @@ const data = ref<OperatorSummary>({
 })
 
 const sessions = ref<SessionRow[]>([])
-const defaultTeaCents = ref(200)
-const sessionVisible = ref(false)
+const payVisible = ref(false)
 const loading = ref(false)
 const error = ref(false)
 const loaded = ref(false)
@@ -316,8 +323,19 @@ async function load() {
   }
 }
 
-function openSession() {
-  sessionVisible.value = true
+async function continueFromLastPay() {
+  try {
+    const w = await salaryApi.nextWindow()
+    range.value = [w.start, w.end]
+    await load()
+    ElMessage.success(
+      w.source === 'last_paid'
+        ? `已续接上次发薪：${w.start} ~ ${w.end}`
+        : `暂无发薪记录，已用默认区间：${w.start} ~ ${w.end}`,
+    )
+  } catch {
+    ElMessage.error('续接失败，请重试')
+  }
 }
 
 // 列表展示层：隐藏「差额与分红都为 0」的人，并按场次倒序（不改动后端口径与合计）
@@ -362,24 +380,81 @@ function summaryMethod({ columns }: { columns: unknown[] }): string[] {
 
 const reportVisible = ref(false)
 const reportText = ref('')
+const reportRows = computed(() =>
+  Math.min(24, Math.max(6, reportText.value.split('\n').length)),
+)
 
-function startDayLabel(from: string): string {
-  return `${Number(from.slice(5, 7))}月${Number(from.slice(8, 10))}日`
+function momentDate(text: string): string {
+  return `${Number(text.slice(5, 7))}月${Number(text.slice(8, 10))}日`
+}
+
+function momentLabel(text: string): string {
+  const date = momentDate(text)
+  const hhmm = text.slice(11, 16)
+  if (!hhmm) return date
+  const ss = text.slice(17, 19)
+  return `${date}${hhmm}${ss && ss !== '00' ? `:${ss}` : ''}`
+}
+
+// 东亚宽字符（含全角空格 　）按 2 列，其余按 1 列，用于把各列对齐
+function displayWidth(text: string): number {
+  let width = 0
+  for (const ch of text) {
+    const code = ch.codePointAt(0) || 0
+    const wide =
+      (code >= 0x1100 && code <= 0x115f) ||
+      (code >= 0x2e80 && code <= 0x303e) ||
+      (code >= 0x3041 && code <= 0x33ff) ||
+      (code >= 0x3400 && code <= 0x4dbf) ||
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6)
+    width += wide ? 2 : 1
+  }
+  return width
+}
+
+function padWidth(text: string, target: number): string {
+  let out = text
+  let width = displayWidth(text)
+  while (width < target) {
+    if (target - width >= 2) {
+      out += '　'
+      width += 2
+    } else {
+      out += ' '
+      width += 1
+    }
+  }
+  return out
 }
 
 function generateReport() {
   const [from, to] = range.value || [day, day]
-  const dayLabel = startDayLabel(from)
-  const head = `${formatShort(from)}至${formatShort(to)}（${dayLabel}）工资与差额：`
-  const parts = displayRows.value.map((row) => {
-    const name = row.user?.display_name || row.user?.username || '未知'
-    let text = `${name}工资${formatYuanShort(row.dividend_cents)}`
-    if (row.cash_diff_cents > 0) text += ` 应交${formatYuanShort(row.cash_diff_cents)}`
-    else if (row.cash_diff_cents < 0) text += ` 应补${formatYuanShort(-row.cash_diff_cents)}`
-    return text
+  const rows = displayRows.value
+  const names = rows.map((row) => row.user?.display_name || row.user?.username || '未知')
+  const wages = rows.map((row) => formatYuanShort(row.dividend_cents))
+  const nameWidth = Math.max(0, ...names.map(displayWidth))
+  const wageWidth = Math.max(0, ...wages.map(displayWidth))
+
+  const lines = rows.map((row, index) => {
+    const diff =
+      row.cash_diff_cents > 0
+        ? `应交${formatYuanShort(row.cash_diff_cents)}`
+        : row.cash_diff_cents < 0
+          ? `应补${formatYuanShort(-row.cash_diff_cents)}***`
+          : ''
+    const body = `${padWidth(names[index], nameWidth)}　工资${padWidth(wages[index], wageWidth)}`
+    return diff ? `${body}　${diff}` : body
   })
-  const tail = `${dayLabel}总计工资支出${formatYuanShort(data.value.totals.dividend_cents)}`
-  reportText.value = parts.length ? `${head}${parts.join('，')}，${tail}` : `${head}无，${tail}`
+
+  const head = `【${momentDate(from)}工资与差额明细】`
+  const period = `统计时段：${momentLabel(from)} 至 ${momentLabel(to)}`
+  const tail = `总计工资支出：${formatYuanShort(data.value.totals.dividend_cents)}元`
+  reportText.value = [head, period, ...lines, tail].join('\n')
   reportVisible.value = true
   // 生成即自动复制，省去再点一次「复制」
   void copyReport()
@@ -409,27 +484,14 @@ async function copyReport() {
   document.body.removeChild(el)
 }
 
-async function onSessionCreated() {
-  await load()
-}
-
 onMounted(async () => {
-  try {
-    const settings = await settingsApi.get()
-    defaultTeaCents.value = settings.last_tea_cents
-  } catch {
-    // 设置读取失败不阻断汇总，茶水沿用本地默认值
-  }
   await load()
-  if (route.query.new) openSession()
 })
 
-// 顶部「开一局」在本页也会跳 ?new=1，这里保证弹窗一定打开
+// 全局「开一局」弹窗创建场次后，本页刷新（不靠跳转，玩家页也能原地开局）
 watch(
-  () => route.query.new,
-  (value) => {
-    if (value) openSession()
-  },
+  () => app.sessionTick,
+  () => void load(),
 )
 </script>
 

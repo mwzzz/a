@@ -137,18 +137,36 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="430" align="right">
+        <el-table-column label="操作" width="320" align="right">
           <template #default="{ row }">
             <div class="ops">
               <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
               <el-button link type="primary" @click="openDeposit(row, 'add')">加押金</el-button>
               <el-button link type="warning" @click="openDeposit(row, 'refund')">退押金</el-button>
-              <el-button link type="success" @click="openDeposit(row, 'bonus')">加赠金</el-button>
               <el-button link type="primary" @click="openTransfer(row)">划押</el-button>
-              <el-button link type="danger" @click="toggleBlacklist(row)">
-                {{ row.is_blacklisted ? '移出黑名单' : '拉黑' }}
-              </el-button>
-              <el-button v-if="auth.isAdmin" link type="danger" @click="remove(row)">删除</el-button>
+              <el-dropdown trigger="click" @command="(cmd: string) => onMoreCommand(cmd, row)">
+                <el-button link type="info">
+                  更多<el-icon class="more-caret"><ArrowDown /></el-icon>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="ledger">查看流水</el-dropdown-item>
+                    <el-dropdown-item command="bonus">加赠金</el-dropdown-item>
+                    <el-dropdown-item
+                      v-if="auth.isAdmin && row.bonus_cents > 0"
+                      command="delete-bonus"
+                    >
+                      删除赠金
+                    </el-dropdown-item>
+                    <el-dropdown-item command="blacklist">
+                      {{ row.is_blacklisted ? '移出黑名单' : '拉黑' }}
+                    </el-dropdown-item>
+                    <el-dropdown-item v-if="auth.isAdmin" command="delete" divided>
+                      删除
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </div>
           </template>
         </el-table-column>
@@ -199,14 +217,29 @@
         <div class="player-card-ops" @click.stop>
           <el-button size="small" @click="openDeposit(row, 'add')">加押金</el-button>
           <el-button size="small" @click="openDeposit(row, 'refund')">退押金</el-button>
-          <el-button size="small" type="success" plain @click="openDeposit(row, 'bonus')">
-            加赠金
-          </el-button>
           <el-button size="small" @click="openTransfer(row)">划押</el-button>
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button size="small" type="danger" plain @click="toggleBlacklist(row)">
-            {{ row.is_blacklisted ? '移出黑名单' : '拉黑' }}
-          </el-button>
+          <el-dropdown trigger="click" @command="(cmd: string) => onMoreCommand(cmd, row)">
+            <el-button size="small">
+              更多<el-icon class="more-caret"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="ledger">查看流水</el-dropdown-item>
+                <el-dropdown-item command="bonus">加赠金</el-dropdown-item>
+                <el-dropdown-item
+                  v-if="auth.isAdmin && row.bonus_cents > 0"
+                  command="delete-bonus"
+                >
+                  删除赠金
+                </el-dropdown-item>
+                <el-dropdown-item command="blacklist">
+                  {{ row.is_blacklisted ? '移出黑名单' : '拉黑' }}
+                </el-dropdown-item>
+                <el-dropdown-item v-if="auth.isAdmin" command="delete" divided>删除</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
       </div>
       <div v-if="!loading && !rows.length" class="empty-hint">还没有玩家</div>
@@ -243,12 +276,12 @@
 </template>
 
 <script setup lang="ts">
-import { AlarmClock, Download, Plus, Refresh, Search, Upload } from '@element-plus/icons-vue'
+import { AlarmClock, ArrowDown, Download, Plus, Refresh, Search, Upload } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { overviewApi, playerApi, settingsApi, summaryApi } from '@/api'
+import { moneyApi, overviewApi, playerApi, settingsApi, summaryApi } from '@/api'
 import type { PlayerRow, SummaryTotals } from '@/api/types'
 import DepositBadge from '@/components/common/DepositBadge.vue'
 import DepositDialog from '@/components/players/DepositDialog.vue'
@@ -256,10 +289,12 @@ import PlayerFormDialog from '@/components/players/PlayerFormDialog.vue'
 import PlayerImportDialog from '@/components/players/PlayerImportDialog.vue'
 import PlayerLedgerDrawer from '@/components/players/PlayerLedgerDrawer.vue'
 import TransferDialog from '@/components/players/TransferDialog.vue'
+import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { formatClock, formatFull, relative } from '@/utils/datetime'
 import { formatCents } from '@/utils/money'
 
+const app = useAppStore()
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
@@ -448,6 +483,14 @@ function openLedger(row: PlayerRow) {
   ledgerVisible.value = true
 }
 
+function onMoreCommand(cmd: string, row: PlayerRow) {
+  if (cmd === 'ledger') openLedger(row)
+  else if (cmd === 'bonus') openDeposit(row, 'bonus')
+  else if (cmd === 'delete-bonus') deleteBonus(row)
+  else if (cmd === 'blacklist') toggleBlacklist(row)
+  else if (cmd === 'delete') remove(row)
+}
+
 function onSaved() {
   reload()
   loadSummary()
@@ -477,6 +520,34 @@ async function toggleBlacklist(row: PlayerRow) {
   await playerApi.update(row.id, { is_blacklisted: next })
   ElMessage.success(next ? '已加入黑名单' : '已移出黑名单')
   reload()
+}
+
+async function deleteBonus(row: PlayerRow) {
+  const cents = row.bonus_cents || 0
+  if (cents <= 0) {
+    ElMessage.warning('该玩家当前没有赠金')
+    return
+  }
+  let note = ''
+  try {
+    const result = await ElMessageBox.prompt(
+      `将删除「${row.game_id}」全部剩余赠金 ¥${formatCents(cents)}` +
+        '（只清赠金、不动现金押金）。常用于误把加押金点成加赠金、且已被茶水消耗无法单笔撤销的收尾。请填写原因。',
+      '删除赠金',
+      {
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        inputPlaceholder: '删除原因（记入流水备注）',
+        type: 'warning',
+      },
+    )
+    note = (result.value || '').trim()
+  } catch {
+    return
+  }
+  const res = await moneyApi.deleteBonus(row.id, note)
+  onPlayerChanged(res.player)
+  ElMessage.success('已删除该玩家剩余赠金')
 }
 
 async function remove(row: PlayerRow) {
@@ -509,11 +580,6 @@ watch(
 )
 
 function handleQueryAction() {
-  if (route.query.new === '1') {
-    openCreate()
-    router.replace({ name: 'players' })
-    return
-  }
   if (route.query.import === '1') {
     importVisible.value = true
     router.replace({ name: 'players' })
@@ -521,8 +587,18 @@ function handleQueryAction() {
 }
 
 watch(
-  () => [route.query.new, route.query.import],
+  () => route.query.import,
   () => handleQueryAction(),
+)
+
+// 全局「开一局」弹窗创建场次后，玩家余额/本班统计会变，这里原地刷新
+watch(
+  () => app.sessionTick,
+  () => {
+    void load()
+    void loadSummary()
+    void loadMyShift()
+  },
 )
 
 onMounted(async () => {
@@ -598,6 +674,10 @@ onMounted(async () => {
   align-items: center;
   gap: 2px;
   justify-content: flex-end;
+}
+
+.more-caret {
+  margin-left: 2px;
 }
 
 .ops :deep(.el-button) {

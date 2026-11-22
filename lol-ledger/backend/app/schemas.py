@@ -156,6 +156,23 @@ class BonusVoidIn(BaseModel):
     note: str = Field(default="", max_length=200)
 
 
+class SalaryBindIn(BaseModel):
+    user_id: int
+    player_id: int | None = None
+
+
+class SalaryPayIn(BaseModel):
+    date_from: str | None = Field(default=None, max_length=25)
+    date_to: str | None = Field(default=None, max_length=25)
+    user_ids: list[int] = Field(min_length=1)
+    note: str = Field(default="", max_length=200)
+
+
+class SalaryVoidIn(BaseModel):
+    batch_id: str = Field(min_length=1, max_length=32)
+    note: str = Field(default="", max_length=200)
+
+
 class RechargeCampaignIn(BaseModel):
     threshold_cents: int = Field(gt=0)
     bonus_cents: int = Field(gt=0)

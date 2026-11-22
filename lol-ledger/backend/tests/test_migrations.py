@@ -311,6 +311,12 @@ def _ddl_for(version: int) -> tuple[list[str], list[str]]:
             )
             # 剥掉最后一列后，上一行留下的悬空逗号会让建表语句报错
             statement = re.sub(r",\s*\n\)", "\n)", statement)
+        if version < 15 and "salary_payments" in statement:
+            continue
+        if version < 15:
+            statement = re.sub(
+                r"^\s*salary_player_id[^\n]*\n", "", statement, flags=re.MULTILINE
+            )
         if version < 3:
             statement = re.sub(
                 r"^\s*is_system\s+INTEGER[^\n]*\n", "", statement, flags=re.MULTILINE

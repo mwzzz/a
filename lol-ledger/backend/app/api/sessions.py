@@ -30,6 +30,8 @@ def list_sessions(
         date_to=date_to,
         page=page,
         page_size=page_size,
+        actor_id=actor.id,
+        is_admin=actor.is_admin,
     )
 
 
@@ -51,7 +53,24 @@ def get_session(
     session: Session = Depends(get_read_db),
 ) -> dict:
     return session_service.get_session_detail(
-        session, session_id, actor.merchant_id
+        session,
+        session_id,
+        actor.merchant_id,
+        actor_id=actor.id,
+        is_admin=actor.is_admin,
+    )
+
+
+@router.post("/{session_id}/void")
+def void_session(
+    session_id: int,
+    request: Request,
+    actor: Actor = Depends(get_current_user),
+    session: Session = Depends(get_write_db),
+) -> dict:
+    """撤销刚开的一局：删场次与茶水扣费流水、退回押金与局数；非本人且非管理员、已结算、或之后又操作过都会拒绝。"""
+    return session_service.void_session(
+        session, actor, session_id, ip=client_ip(request)
     )
 
 

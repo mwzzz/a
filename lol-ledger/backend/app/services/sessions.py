@@ -4,18 +4,29 @@ from __future__ import annotations
 
 from datetime import date as date_cls
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.deps import Actor
-from app.errors import AppError
-from app.models import GameSession, Player, SessionPlayer
+from app.errors import AppError, ForbiddenError
+from app.models import (
+    DividendSettlementSession,
+    GameSession,
+    LedgerEntry,
+    Player,
+    SessionPlayer,
+)
 from app.serializers import session_player_row, session_row
 from app.scope import scoped_get
 from app.services import options
 from app.services.ai_matching import base_name
 from app.services.audit import write_audit
-from app.services.deposits import _write_entry, apply_tea_deduction
+from app.services.deposits import (
+    _write_entry,
+    apply_bonus_delta,
+    apply_cash_delta,
+    apply_tea_deduction,
+)
 from app.services.money import deposit_level
 from app.services.players import clean_text, get_player
 from app.services.tool_lists import tea_free_name_keys
@@ -226,7 +237,115 @@ def open_session(
     refreshed = get_session_model(session, game_id, merchant_id)
     data = session_row(refreshed, members)
     data["tea_free_removed"] = removed
+    data["voidable"] = True
     return data
+
+
+def void_session(
+    session: Session,
+    actor: Actor,
+    session_id: int,
+    *,
+    ip: str = "",
+) -> dict:
+    """撤销刚开的一局：删掉这场与它的茶水扣费流水，把每位参与者的押金/赠金/局数原样退回。
+
+    只在「这一局是每位参与者当前最新一笔流水、且从未被任何分红结算认领、且操作人是开局本人或门店管理员」
+    时才允许，否则余额链或对账会被打乱。这是唯一的「删除流水行」场景，故护栏必须在写事务内判定。
+    """
+    merchant_id = actor.merchant_id
+    game = get_session_model(session, session_id, merchant_id)
+    game_id = int(game.id)
+    game_name = game.name or str(game_id)
+
+    if not (actor.is_admin or int(game.operator_id) == int(actor.id)):
+        raise ForbiddenError("只有开局本人或管理员能撤回这一局")
+
+    members = list(
+        session.scalars(
+            select(SessionPlayer).where(SessionPlayer.session_id == game_id)
+        )
+    )
+    member_count = len(members)
+
+    touched_by_settlement = session.scalar(
+        select(DividendSettlementSession.id)
+        .where(
+            DividendSettlementSession.merchant_id == merchant_id,
+            DividendSettlementSession.session_id == game_id,
+        )
+        .limit(1)
+    )
+    if touched_by_settlement is not None:
+        raise AppError("这一局涉及分红结算记录，不能直接撤回；请先核对该区间结算。")
+
+    offenders: list[str] = []
+    restored: list[tuple[int, int, int]] = []
+    for member in members:
+        entry = (
+            session.get(LedgerEntry, int(member.ledger_id)) if member.ledger_id else None
+        )
+        if entry is None or int(entry.session_id) != game_id:
+            offenders.append(member.player.game_id if member.player else "?")
+            continue
+        max_id = session.scalar(
+            select(func.max(LedgerEntry.id)).where(
+                LedgerEntry.merchant_id == merchant_id,
+                LedgerEntry.player_id == member.player_id,
+            )
+        )
+        if max_id is None or int(max_id) != int(entry.id):
+            offenders.append(member.player.game_id if member.player else "?")
+            continue
+        amount_cents = int(entry.amount_cents)
+        bonus_used = int(entry.bonus_amount_cents)
+        restored.append((int(member.player_id), amount_cents - bonus_used, bonus_used))
+
+    if offenders:
+        raise AppError(
+            "玩家 " + "、".join(sorted(set(offenders))) +
+            " 在这局之后又有了别的流水，不能这样直接撤回；请联系管理员改用正常的加/退押金。"
+        )
+
+    for player_id, cash_used, bonus_used in restored:
+        apply_cash_delta(
+            session, player_id, cash_used, merchant_id=merchant_id, games_delta=-1
+        )
+        if bonus_used:
+            apply_bonus_delta(session, player_id, bonus_used, merchant_id=merchant_id)
+
+    session.execute(
+        delete(SessionPlayer).where(SessionPlayer.session_id == game_id)
+    )
+    session.execute(
+        delete(LedgerEntry).where(
+            LedgerEntry.merchant_id == merchant_id,
+            LedgerEntry.session_id == game_id,
+            LedgerEntry.reason == "normal_deduct",
+        )
+    )
+    session.execute(
+        delete(GameSession).where(
+            GameSession.merchant_id == merchant_id, GameSession.id == game_id
+        )
+    )
+    session.flush()
+
+    write_audit(
+        session,
+        merchant_id=merchant_id,
+        user_id=actor.id,
+        action="void_session",
+        target_type="session",
+        target_id=game_id,
+        detail=f"撤回场次 {game_name}，退回 {member_count} 人押金",
+        ip=ip,
+    )
+    return {
+        "voided": True,
+        "session_id": game_id,
+        "restored_player_count": member_count,
+    }
 
 
 def get_session_model(session: Session, session_id: int, merchant_id: int) -> GameSession:
@@ -243,6 +362,8 @@ def list_sessions(
     operator_id: int | None = None,
     page: int = 1,
     page_size: int = 20,
+    actor_id: int | None = None,
+    is_admin: bool = False,
 ) -> dict:
     page = max(1, int(page))
     page_size = min(200, max(1, int(page_size)))
@@ -292,20 +413,90 @@ def list_sessions(
         ):
             members.setdefault(item.session_id, []).append(item)
 
+    voidable = _voidable_map(
+        session, merchant_id, games, members, actor_id=actor_id, is_admin=is_admin
+    )
+    items = []
+    for game in games:
+        row = session_row(game, members.get(game.id, []))
+        row["voidable"] = voidable.get(int(game.id), False)
+        items.append(row)
+
     return {
-        "items": [session_row(game, members.get(game.id, [])) for game in games],
+        "items": items,
         "total": total,
         "page": page,
         "page_size": page_size,
     }
 
 
-def get_session_detail(session: Session, session_id: int, merchant_id: int) -> dict:
+def _voidable_map(
+    session: Session,
+    merchant_id: int,
+    games: list[GameSession],
+    members: dict[int, list[SessionPlayer]],
+    *,
+    actor_id: int | None,
+    is_admin: bool,
+) -> dict[int, bool]:
+    """每个场次当前能否被该操作人「撤回一局」：权限 √ 从未被结算认领 √ 每位参与者都还是最新一笔流水。"""
+    result: dict[int, bool] = {}
+    if not games:
+        return result
+    game_ids = [int(game.id) for game in games]
+    claimed = set(
+        int(sid)
+        for sid in session.scalars(
+            select(DividendSettlementSession.session_id).where(
+                DividendSettlementSession.merchant_id == merchant_id,
+                DividendSettlementSession.session_id.in_(game_ids),
+            )
+        )
+    )
+    player_ids = {int(m.player_id) for rows in members.values() for m in rows}
+    max_id: dict[int, int] = {}
+    if player_ids:
+        for pid, current_max in session.execute(
+            select(LedgerEntry.player_id, func.max(LedgerEntry.id))
+            .where(
+                LedgerEntry.merchant_id == merchant_id,
+                LedgerEntry.player_id.in_(player_ids),
+            )
+            .group_by(LedgerEntry.player_id)
+        ).all():
+            max_id[int(pid)] = int(current_max)
+    for game in games:
+        gid = int(game.id)
+        allowed = bool(is_admin) or (
+            actor_id is not None and int(game.operator_id) == int(actor_id)
+        )
+        rows = members.get(gid, [])
+        last_activity = bool(rows) and all(
+            m.ledger_id is not None and max_id.get(int(m.player_id)) == int(m.ledger_id)
+            for m in rows
+        )
+        result[gid] = bool(allowed and gid not in claimed and last_activity)
+    return result
+
+
+def get_session_detail(
+    session: Session,
+    session_id: int,
+    merchant_id: int,
+    *,
+    actor_id: int | None = None,
+    is_admin: bool = False,
+) -> dict:
     game = get_session_model(session, session_id, merchant_id)
     players = list(
         session.scalars(select(SessionPlayer).where(SessionPlayer.session_id == session_id))
     )
-    return session_row(game, players)
+    data = session_row(game, players)
+    data["voidable"] = _voidable_map(
+        session, merchant_id, [game], {int(game.id): players},
+        actor_id=actor_id, is_admin=is_admin,
+    ).get(int(game.id), False)
+    return data
 
 
 def session_preview_rows(

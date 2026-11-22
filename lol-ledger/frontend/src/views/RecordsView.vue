@@ -20,8 +20,8 @@
       <el-date-picker
         v-model="dateRange"
         type="datetimerange"
-        value-format="YYYY-MM-DDTHH:mm"
-        format="MM-DD HH:mm"
+        value-format="YYYY-MM-DDTHH:mm:ss"
+        format="MM-DD HH:mm:ss"
         start-placeholder="开始时间"
         end-placeholder="结束时间"
         :shortcuts="shortcuts"
@@ -188,6 +188,18 @@
                 <span class="muted players">{{ row.players.map((p: any) => p.game_id).join('、') }}</span>
               </template>
             </el-table-column>
+            <el-table-column label="操作" width="80" align="right">
+              <template #default="{ row }">
+                <el-button
+                  v-if="row.voidable"
+                  link
+                  type="warning"
+                  @click="voidSession(row)"
+                >
+                  撤回
+                </el-button>
+              </template>
+            </el-table-column>
           </el-table>
           <div v-if="!loading && !sessions.length" class="empty-hint">没有记录</div>
         </div>
@@ -207,6 +219,9 @@
                 <span>操作人 {{ row.operator?.display_name || '-' }}</span>
               </div>
               <div class="record-card-players">{{ row.players.map((p) => p.game_id).join('、') }}</div>
+              <div v-if="row.voidable" class="record-card-actions">
+                <el-button link type="warning" @click="voidSession(row)">撤回这一局</el-button>
+              </div>
             </div>
             <div v-if="!loading && !sessions.length" class="empty-hint">没有记录</div>
           </div>
@@ -229,17 +244,20 @@
 </template>
 
 <script setup lang="ts">
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Search } from '@element-plus/icons-vue'
 import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
-import { recordApi } from '@/api'
+import { recordApi, sessionApi } from '@/api'
 import type { LedgerEntryRow, OperatorCashSummary, OperatorOption, SessionRow } from '@/api/types'
 import MoneyText from '@/components/common/MoneyText.vue'
+import { useAppStore } from '@/stores/app'
 import { formatFull, formatShort, momentShortcuts } from '@/utils/datetime'
 import { formatCents } from '@/utils/money'
 
 const route = useRoute()
+const app = useAppStore()
 
 withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
 
@@ -312,6 +330,24 @@ async function load() {
 function reload() {
   page.value = 1
   load()
+}
+
+async function voidSession(row: SessionRow) {
+  try {
+    await ElMessageBox.confirm(
+      `确定撤回「${row.name}」这一局？将删除该场次与它产生的茶水扣费，` +
+        `退回 ${row.player_count} 名玩家的押金与局数（每人 ¥${formatCents(row.tea_fee_cents)}）。` +
+        '只适用于刚开、且之后没再操作过这些玩家的局；不会生成任何加押/退押记录。',
+      '撤回这一局',
+      { confirmButtonText: '确认撤回', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  await sessionApi.void(row.id)
+  ElMessage.success('已撤回这一局')
+  await load()
+  app.notifySessionCreated()
 }
 
 function onTabChange() {
@@ -415,6 +451,12 @@ onMounted(() => {
   font-size: 12px;
   color: var(--app-text-muted);
   line-height: 1.6;
+}
+
+.record-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
 }
 
 .players {

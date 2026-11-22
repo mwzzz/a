@@ -272,6 +272,7 @@ export interface SessionRow {
   created_at: string
   players: SessionPlayerRow[]
   tea_free_removed?: string[]
+  voidable?: boolean
 }
 
 export interface SettingsPayload {
@@ -306,6 +307,45 @@ export interface OperatorSummary {
   dividend_fixed_cents: number
   rows: OperatorSummaryRow[]
   totals: SummaryTotals
+}
+
+export interface SalaryPreviewItem {
+  user_id: number
+  display_name: string
+  amount_cents: number
+  salary_player_id: number | null
+  salary_player_game_id: string | null
+  paid: boolean
+  paid_amount_cents: number
+  paid_batch_id: string | null
+}
+
+export interface SalaryPreview {
+  wage_date: string
+  start_text: string
+  end_text: string
+  items: SalaryPreviewItem[]
+  total_cents: number
+}
+
+export interface SalaryNextWindow {
+  start: string
+  end: string
+  source: 'last_paid' | 'default'
+  anchor_end: string | null
+}
+
+export interface SalaryPayResult {
+  batch_id: string
+  wage_date: string
+  lines: {
+    user_id: number
+    display_name: string
+    player_id: number
+    amount_cents: number
+    ledger_entry_id: number
+  }[]
+  total_cents: number
 }
 
 export interface OperatorOption {

@@ -336,6 +336,45 @@ def void_bonus(
     }
 
 
+def delete_bonus(
+    session: Session,
+    actor: Actor,
+    player_id: int,
+    note: str = "",
+) -> dict:
+    """管理员删除玩家当前剩余的全部赠金：写一条反向 bonus_void 流水，只清赠金、不碰现金。
+
+    用于误把加押金点成加赠金、且赠金已被茶水部分消耗、无法再走单笔撤销的收尾场景。
+    余额仍由流水推导，撤销后 bonus_cents 归零、deposit_cents 不变，对账恒成立。
+    """
+    merchant_id = actor.merchant_id
+    player = get_player(session, player_id, merchant_id)
+    amount_cents = int(player.bonus_cents)
+    if amount_cents <= 0:
+        raise AppError("该玩家当前没有赠金可删除")
+    clean = clean_text(note, "备注", 200) or "管理员删除剩余赠金"
+    cash, cash_again, bonus_before, bonus_after = apply_bonus_delta(
+        session, player_id, -amount_cents, merchant_id=merchant_id
+    )
+    entry = _write_entry(
+        session,
+        actor=actor,
+        player_id=player_id,
+        reason="bonus_void",
+        amount_cents=amount_cents,
+        deposit_before=cash,
+        deposit_after=cash_again,
+        bonus_before=bonus_before,
+        bonus_after=bonus_after,
+        batch_id=current_batch_id(session, merchant_id),
+        note=clean,
+    )
+    return {
+        "entry": entry_payload(session, entry),
+        "player": _player_payload(session, player_id, merchant_id),
+    }
+
+
 def refund(
     session: Session,
     actor: Actor,
@@ -346,13 +385,8 @@ def refund(
     require_positive(amount_cents, "退押金金额必须大于 0")
     merchant_id = actor.merchant_id
     player = get_player(session, player_id, merchant_id)
-    if int(player.bonus_cents) > 0:
-        raise AppError(
-            f"该玩家还有赠金 ¥{format_yuan(player.bonus_cents)}，赠金不能退；"
-            "请先用赠金扣茶水，赠金为 0 后再退押金"
-        )
     if int(amount_cents) > int(player.deposit_cents):
-        raise AppError("押金不足，不能退这么多")
+        raise AppError("现金押金不足，不能退这么多")
     clean = clean_text(note, "备注", 200)
     cash_before, cash_after, bonus_before, bonus_after = apply_cash_delta(
         session, player_id, -int(amount_cents), merchant_id=merchant_id

@@ -116,7 +116,8 @@ Authorization: Bearer <access_token>
 | POST | `/players/{id}/deposits` | 加押金，`{amount_cents, note?}`，必须 > 0；命中充值活动时同事务追加 `add_bonus` 流水，返回 `{entry, bonus_entry, campaign, player}` |
 | POST | `/players/{id}/bonus` | 手动加赠金，`{amount_cents, note?}`，必须 > 0；管理员和店员都可用 |
 | POST | `/ledger/entries/{entry_id}/void-bonus` | 撤销一笔误加的赠金，`{note?}`，**管理员和店员都可用**；写一条反向 `bonus_void` 流水只回退赠金、不动现金；要求该笔 `add_bonus` 未被茶水消耗且未撤销过，否则 400；跨商家 404 |
-| POST | `/players/{id}/refunds` | 退押金，不能超过现金押金；玩家有赠金时拒绝，赠金为 0 后才能退 |
+| POST | `/players/{id}/bonus/delete` | **仅管理员**一键删除该玩家当前剩余的全部赠金，`{note?}`；写一条反向 `bonus_void` 流水（`amount_cents` = 当前赠金）只清赠金、不动现金；赠金为 0 时 400，跨商家 404。用于误加赠金且已被茶水部分消耗、单笔撤销不了的收尾 |
+| POST | `/players/{id}/refunds` | 退押金，只退**现金押金**，不能超过现金押金；玩家有赠金时照样可退现金，赠金不动 |
 | POST | `/transfers` | `{from_player_id, to_player_id, amount_cents, note?}`；只动现金押金，有赠金时不能超过现金部分 |
 
 手动扣押已取消，历史数据在 v4 迁移时并入 `refund`。
@@ -137,10 +138,11 @@ Authorization: Bearer <access_token>
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/sessions` | `keyword, date_from, date_to, page, page_size` |
+| GET | `/sessions` | `keyword, date_from, date_to, page, page_size`；每行返回 `voidable`（当前登录人能否撤回这局） |
 | POST | `/sessions/preview` | `{player_ids, tea_fee_cents}` → 每人扣前/扣后/是否变负 |
 | POST | `/sessions` | `{name?, played_at?, note?, tea_fee_cents, player_ids}` |
-| GET | `/sessions/{id}` | 场次详情，含每人扣费 |
+| GET | `/sessions/{id}` | 场次详情，含每人扣费；同样带 `voidable` |
+| POST | `/sessions/{id}/void` | 撤回刚开的一局（开这局的本人或门店管理员）。删除该场、其 `session_players` 与 `normal_deduct` 流水，退回每人押金/赠金并局数 −1；不产生任何加押/退押记录（不影响差额）。护栏：该场从未被任何分红结算认领、且这局的扣费是每位参与者当前最新一笔流水，否则 400；非本人非管理员 403；跨商家 404 |
 
 规则：1~10 人、自动去重、每人扣相同茶水、允许扣成负数、整局一个事务。常用名单「免茶水」分类里的玩家会被自动排除（按游戏 id，忽略 `#后缀` 和大小写）；黑名单玩家不能开局，返回 400。
 
@@ -191,14 +193,15 @@ Authorization: Bearer <access_token>
 
 ## 时间参数（重要）
 
-`date_from` / `date_to` 同时接受两种写法，后端统一成带 `+08:00` 的闭区间：
+`date_from` / `date_to` 同时接受三种写法，后端统一成带 `+08:00` 的闭区间：
 
 - `2026-11-06`：当天 00:00:00 至 23:59:59
 - `2026-11-06T09:30` 或 `2026-11-06 09:30`：精确到该分钟
+- `2026-11-06T09:30:15`：精确到该秒
 
-涉及接口：`/summary/operators`、`/records/*`、`/sessions`、`/reports/dividends/*`。
+涉及接口：`/summary/operators`、`/records/*`、`/sessions`、`/reports/dividends/*`、`/salary/*`。
 
-右边界一律补到该精度的最后一秒：`2026-11-06` → `23:59:59`，`2026-11-06T09:30` → `09:30:59`。
+右边界一律补到该精度的最后一秒：`2026-11-06` → `23:59:59`，`2026-11-06T09:30` → `09:30:59`，`2026-11-06T09:30:15` → `09:30:15`（秒级原样，不再补）。汇总/报表/分红结算/发工资的前端区间选择器已精确到秒；相邻区间要从上一段结束 +1 秒开始，否则同一秒的场次会被两段都算到。
 
 ## 分红结算的幂等口径（重要）
 
@@ -212,6 +215,20 @@ Authorization: Bearer <access_token>
 | POST | `/reports/dividends/settlements/{id}/void` | `{note}`，仅管理员。软冲销：把该笔结算的金额保持原样、只标记 `voided_at`，同时释放它认领的场次回到待结算，写审计 `dividend_settlement_void` |
 
 因此区间重叠不再返回 0：已发过的局被跳过，剩下的（含结算之后补录进同一区间的）照常待结。历史结算行只存到日期时，比较前用 `timeutil.bound_start_text` / `bound_end_text` 归一化；解析不了的行跳过，不影响整页。
+
+## 发工资（仅管理员）
+
+把某区间每人的分红加押金到其绑定的工资账户；工资额由服务端按区间重算（等于 `/summary/operators` 的 `dividend_cents`），**不触发充值活动赠金**。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/salary/preview?date_from&date_to` | 列出区间内工资>0 的操作人：`amount_cents`、绑定账户 `salary_player_id`/`salary_player_game_id`、本工资日是否已发 `paid`/`paid_amount_cents`/`paid_batch_id` |
+| GET | `/salary/next-window` | 「续接上次发薪」建议区间：`{start, end, source, anchor_end}`。`start` = 未冲销发放记录里最晚 `period_end` 的下一秒，`end` = 今天 08:00；无发放记录时 `source=default`，回落到「今天-1天 08:00 ～ 今天 08:00」 |
+| POST | `/salary/bind` | `{user_id, player_id\|null}`，把店员绑到一个玩家作为工资账户（写 `users.salary_player_id`）；`player_id` 为空即解绑 |
+| POST | `/salary/pay` | `{date_from, date_to, user_ids, note?}`，逐人 `add_deposit`（`apply_campaign=False`）并写 `salary_payments`；每人每「工资日」只允许一条未冲销记录（DB 唯一索引），重复发返回 400；整批同事务 |
+| POST | `/salary/void` | `{batch_id, note?}`，按批次逐笔退押金并置 `voided_at`；受退押金规则限制（余额不足或有赠金则失败），任一失败整批回滚 |
+
+工资日 = 区间开始日（`date_from` 的 `YYYY-MM-DD`）。仅门店管理员可用（`require_admin`），店员与超管返回 403。
 
 ## 约定
 

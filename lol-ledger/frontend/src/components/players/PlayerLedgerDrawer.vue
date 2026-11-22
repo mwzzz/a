@@ -65,6 +65,13 @@
             撤销
           </el-button>
           <span v-else-if="row.reason === 'add_bonus' && row.voided" class="muted">已撤销</span>
+          <el-tooltip
+            v-else-if="row.reason === 'add_bonus'"
+            content="这笔赠金已被茶水消耗，无法撤销"
+            placement="top"
+          >
+            <span class="muted">已消耗</span>
+          </el-tooltip>
         </template>
       </el-table-column>
     </el-table>

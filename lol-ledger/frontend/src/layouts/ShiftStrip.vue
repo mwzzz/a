@@ -36,18 +36,15 @@
 </template>
 
 <script setup lang="ts">
-import { useRouter } from 'vue-router'
-
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { formatCents } from '@/utils/money'
 
-const router = useRouter()
 const app = useAppStore()
 const auth = useAuthStore()
 
 function openSession() {
-  router.push({ name: 'summary', query: { new: '1' } })
+  app.openSessionDialog()
 }
 </script>
 

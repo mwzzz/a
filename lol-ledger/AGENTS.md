@@ -24,7 +24,7 @@
 
 ## 技术栈与目录
 
-- 后端：FastAPI + SQLAlchemy 2.0 + SQLite（WAL），schema 版本化迁移，当前 **v14**
+- 后端：FastAPI + SQLAlchemy 2.0 + SQLite（WAL），schema 版本化迁移，当前 **v15**
 - 前端：Vue 3 + TypeScript + Element Plus + Pinia + Vite
 - 目录：`backend/app`（`api/` 路由、`services/` 业务、`migrations.py` 建表与迁移）、`backend/tests`、`frontend/src`（`views/` 页面、`api/` 请求与类型）、`deploy/`、`docs/`
 
@@ -50,6 +50,9 @@ cd backend && python -m pytest -q          # 后端全部用例
 cd frontend && npm run typecheck && npm run build
 ```
 
+**改完需求、本地测试全绿后，不要把服务停掉**：保持后端（8010）和前端 `npm run dev` 运行，交给用户手动点开页面验证。用户确认没问题之前，服务一直开着。
+启动前先把遗留的旧后端和多余 vite 进程清掉（否则新接口会报假 404、端口被占）。
+
 ## 业务口径（最容易写错的地方）
 
 | 概念 | 口径 |
@@ -59,10 +62,12 @@ cd frontend && npm run typecheck && npm run build
 | 分红 | 两种模式：`percent`（茶水总额 × 比例）/ `fixed`（局数 × 每局金额），存在 `merchant_settings` |
 | 差额 | 收押金 − 退押金，按 `operator_id` 汇总；**正数=店员应交，负数=店长应补**，划转不计入 |
 | 时间归属 | 场次按 `played_at`，押金与分红按 `created_at`；统一东八区，字符串字典序即时序 |
-| 赠金 | `players.bonus_cents`，只能被 `normal_deduct` 扣茶水消耗，先扣赠金再扣现金；不能退款、不能划押。误加的赠金可由管理员或店员撤销（reason `bonus_void`，写一条反向流水只回退赠金、不动现金），仅限**未被茶水消耗且未撤销过**的 `add_bonus` 流水 |
+| 赠金 | `players.bonus_cents`，只能被 `normal_deduct` 扣茶水消耗，先扣赠金再扣现金；不能退款、不能划押。误加的赠金可由管理员或店员撤销（reason `bonus_void`，写一条反向流水只回退赠金、不动现金），仅限**未被茶水消耗且未撤销过**的 `add_bonus` 流水；已被茶水消耗撤不掉时，**仅门店管理员**可对玩家一键删除全部剩余赠金（`POST /players/{id}/bonus/delete`，同样写 `bonus_void`，只清赠金、不动现金） |
 | 充值活动 | `recharge_campaigns` 按商家配置多档，加押金自动取满足金额的最高档送一次；Excel 导入不触发 |
 | 余额 | 现金 `players.deposit_cents` = 现金流水净额 = 末条 `deposit_after_cents`；赠金 `players.bonus_cents` = 赠金流水净额 = 末条 `bonus_after_cents`；界面总余额 = 两者相加 |
 | 分红幂等 | **每一局只结算一次**：结算时把区间内未认领的场次逐局写进 `dividend_settlement_sessions`（未冲销行里 `session_id` 唯一，DB 级防重复发钱）；区间重叠不再整段清零。历史记录只存到日期，比较前统一用 `timeutil.bound_start_text` / `bound_end_text` 归一化 |
+| 撤回一局 | 「场次记录」每行可「撤回」（**开这局的本人或门店管理员**）：删除该场 + 其 `session_players` 与 `normal_deduct` 流水，退回押金/赠金、局数 −1，**不写加押/退押、不影响操作人差额**，无迁移。护栏：该局**从未被任何分红结算认领**（含已冲销）、且这局扣费是**每位参与者当前最新一笔流水**，否则拒绝；这是**唯一允许删除流水行**的场景 |
+| 发工资 | v15。店长在汇总页按区间一键给每人发工资：金额=本人 `dividend_cents`（服务端重算，与生成工资汇总一致），加押金到绑定的工资账户（`users.salary_player_id`），**`apply_campaign=False` 不触发充值活动赠金**；`salary_payments` 每人每「工资日」（区间开始日）只一条未冲销记录（DB 唯一索引防重复发），可整批撤销（退押金，受余额/赠金规则限制）；仅门店管理员可用 |
 
 对账不通过（`/api/v1/reconcile`）说明有人绕过接口改过余额，找管理员，不要自行修数据。
 
@@ -78,8 +83,8 @@ cd frontend && npm run typecheck && npm run build
 - **备份不能用 `cp`**：WAL 模式下直接复制会得到不一致副本，必须 `sqlite3 db ".backup out.db"`。
 - **`deploy/*.sh` 必须 755**：权限掉了 systemd 报 `status=203/EXEC`，备份会静默失败。
 - **PowerShell 脚本存 UTF-8 with BOM**：PS 5.1 按 GBK 读会报语法错。
-- **前端 `el-date-picker` 用 `value-format="YYYY-MM-DDTHH:mm"`**，后端 `timeutil.moment_bounds` 同时吃纯日期和分钟。
-- **区间右边界一律走 `timeutil.parse_end_moment`/`bound_end_text`**：纯日期补 `23:59:59`、分钟补 `:59`。自己 `parse_moment(date_to)` 会把边界变成 `23:59:00`，那一分钟的场次两头都不在任何区间里。
+- **前端 `el-date-picker` 用 `value-format="YYYY-MM-DDTHH:mm:ss"`**（汇总/报表/分红结算都精确到秒），后端 `timeutil.moment_bounds` 同时吃纯日期、分钟和秒。
+- **区间右边界一律走 `timeutil.parse_end_moment`/`bound_end_text`**：纯日期补 `23:59:59`、分钟补 `:59`、秒原样。自己 `parse_moment(date_to)` 会把分钟边界变成 `23:59:00`，那一分钟的场次两头都不在任何区间里。秒精度下相邻区间要从「上一段结束 +1 秒」起，否则同一秒的场次被两段都算。
 - 单机 1.6G 内存，别起多余进程；uvicorn 单 worker 足够。
 
 ## 历史包袱（不要试图「修好」，先问）

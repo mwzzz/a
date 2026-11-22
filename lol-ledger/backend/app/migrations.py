@@ -16,6 +16,10 @@ v12 引入玩家赠金与充值活动：players.bonus_cents、ledger 现金/赠�
 recharge_campaigns 档位表。
 v13 引入「撤销加赠金」：ledger reason 白名单加 bonus_void，新增可空列
 reverses_ledger_id 指向被撤销的加赠金流水；仅加宽约束/加列，不动历史数据。
+v14 分红幂等从区间去重改为按场次认领（dividend_settlement_sessions）并支持冲销；
+仅加表/加可空列 + 回填认领，历史结算金额与区间不动。
+v15 引入「发工资」：users.salary_player_id 绑定工资账户，新增 salary_payments 记录
+每人每「工资日」的发放（未冲销行里 (merchant,user,wage_date) 唯一，DB 级防重复发）。
 
 迁移策略：
 - 全新库：按 v6 直接建表，写入默认商家、平台商家和默认配置。
@@ -45,7 +49,7 @@ from app.timeutil import (
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 DEFAULT_MERCHANT_NAME = "默认商家"
 PLATFORM_MERCHANT_NAME = "平台管理"
 DEFAULT_DIVIDEND_RATE = 50
@@ -164,6 +168,41 @@ DIVIDEND_CLAIM_INDEX_STATEMENTS: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS ix_dss_merchant_user
         ON dividend_settlement_sessions(merchant_id, user_id, voided_at)
+    """,
+)
+
+# v15 发工资：每人每「工资日」一条未冲销记录，DB 级防重复发
+SALARY_PAYMENT_TABLE = """
+CREATE TABLE IF NOT EXISTS salary_payments (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    merchant_id     INTEGER NOT NULL REFERENCES merchants(id),
+    user_id         INTEGER NOT NULL REFERENCES users(id),
+    player_id       INTEGER NOT NULL REFERENCES players(id),
+    amount_cents    INTEGER NOT NULL CHECK (amount_cents > 0),
+    wage_date       TEXT    NOT NULL,
+    period_start    TEXT    NOT NULL DEFAULT '',
+    period_end      TEXT    NOT NULL DEFAULT '',
+    batch_id        TEXT    NOT NULL DEFAULT '',
+    ledger_entry_id INTEGER REFERENCES ledger(id),
+    note            TEXT    NOT NULL DEFAULT '',
+    voided_at       TEXT,
+    voided_by       INTEGER REFERENCES users(id),
+    created_at      TEXT    NOT NULL
+)
+"""
+
+SALARY_INDEX_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_salary_live_per_user_day
+        ON salary_payments(merchant_id, user_id, wage_date) WHERE voided_at IS NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_salary_batch
+        ON salary_payments(batch_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_salary_merchant_date
+        ON salary_payments(merchant_id, wage_date DESC, id DESC)
     """,
 )
 
@@ -410,6 +449,7 @@ TABLE_STATEMENTS: tuple[str, ...] = (
         role                TEXT    NOT NULL CHECK (role IN ('admin', 'staff')),
         is_active           INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
         is_superadmin       INTEGER NOT NULL DEFAULT 0 CHECK (is_superadmin IN (0, 1)),
+        salary_player_id    INTEGER REFERENCES players(id),
         password_changed_at TEXT    NOT NULL,
         last_login_at       TEXT,
         created_at          TEXT    NOT NULL,
@@ -516,6 +556,7 @@ TABLE_STATEMENTS: tuple[str, ...] = (
     DIVIDEND_SETTLEMENT_TABLE,
     DIVIDEND_SETTLEMENT_BATCH_TABLE,
     DIVIDEND_SETTLEMENT_SESSION_TABLE,
+    SALARY_PAYMENT_TABLE,
     *QUEUE_STATEMENTS,
     *TOOL_STATEMENTS,
     *RECHARGE_CAMPAIGN_STATEMENTS,
@@ -840,6 +881,7 @@ def _create_fresh(conn: sqlite3.Connection) -> None:
             + HANDOVER_INDEX_STATEMENTS
             + DIVIDEND_INDEX_STATEMENTS
             + DIVIDEND_CLAIM_INDEX_STATEMENTS
+            + SALARY_INDEX_STATEMENTS
         ):
             conn.execute(statement)
         for statement in ZJ_STATEMENTS:
@@ -905,6 +947,7 @@ def _upgrade_v1(conn: sqlite3.Connection, db_path: Path) -> None:
             + HANDOVER_INDEX_STATEMENTS
             + DIVIDEND_INDEX_STATEMENTS
             + DIVIDEND_CLAIM_INDEX_STATEMENTS
+            + SALARY_INDEX_STATEMENTS
         ):
             conn.execute(statement)
         for statement in ZJ_STATEMENTS:
@@ -1516,6 +1559,36 @@ def _upgrade_v13_to_v14(conn: sqlite3.Connection, db_path: Path) -> None:
         conn.execute("PRAGMA foreign_keys=ON")
 
 
+def _upgrade_v14_to_v15(conn: sqlite3.Connection, db_path: Path) -> None:
+    """v14 → v15：发工资。
+
+    users 加可空列 salary_player_id（绑定的工资账户），新增 salary_payments 记录表，
+    并加「每人每工资日只一条未冲销」的唯一索引防重复发。仅加列 / 加表 / 加索引，非破坏。
+    """
+    backup = _backup(conn, db_path, "pre-v15")
+    logger.info("迁移前已备份：%s", backup)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not _column_exists(conn, "users", "salary_player_id"):
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN salary_player_id INTEGER REFERENCES players(id)"
+            )
+        conn.execute(SALARY_PAYMENT_TABLE)
+        for statement in SALARY_INDEX_STATEMENTS:
+            conn.execute(statement)
+        conn.execute("PRAGMA user_version = 15")
+        _assert_foreign_keys(conn)
+        conn.execute("COMMIT")
+        logger.info("v14 → v15 迁移完成：发工资账户绑定与发放记录")
+    except Exception:
+        _rollback(conn)
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
 def ensure_schema() -> None:
     path = db.current_path()
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=20)
@@ -1554,6 +1627,8 @@ def ensure_schema() -> None:
             _upgrade_v12_to_v13(conn, path)
         if version < 14:
             _upgrade_v13_to_v14(conn, path)
+        if version < 15:
+            _upgrade_v14_to_v15(conn, path)
     finally:
         conn.close()
 

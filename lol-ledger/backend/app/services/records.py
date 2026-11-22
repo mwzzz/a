@@ -138,6 +138,8 @@ def list_session_records(
     operator_id: int | None = None,
     page: int = 1,
     page_size: int = 20,
+    actor_id: int | None = None,
+    is_admin: bool = False,
 ) -> dict:
     return list_sessions(
         session,
@@ -148,6 +150,8 @@ def list_session_records(
         operator_id=operator_id,
         page=page,
         page_size=page_size,
+        actor_id=actor_id,
+        is_admin=is_admin,
     )
 
 

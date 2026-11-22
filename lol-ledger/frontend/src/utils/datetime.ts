@@ -59,7 +59,7 @@ export function todayText(): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
 
-/** 区间端点：纯日期显示 MM-DD，带时间显示 MM-DD HH:mm */
+/** 区间端点：纯日期显示 MM-DD，带时间显示 MM-DD HH:mm，秒非零才追加 :ss */
 export function formatMoment(value?: string | null): string {
   if (!value) return '-'
   const text = value.trim()
@@ -67,24 +67,35 @@ export function formatMoment(value?: string | null): string {
     const [, month, day] = text.split('-')
     return `${month}-${day}`
   }
-  return formatShort(text)
+  const date = toDate(text)
+  if (!date) return formatShort(text)
+  const base = `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(
+    date.getMinutes(),
+  )}`
+  const ss = date.getSeconds()
+  return ss ? `${base}:${pad(ss)}` : base
 }
 
-/** 今天的起止（精确到分钟），用作区间筛选的默认值 */
+/** 分钟端点补齐成秒级（...T07:03 → ...T07:03:00），已是秒级或纯日期原样返回 */
+export function withSeconds(text: string): string {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(text) ? `${text}:00` : text
+}
+
+/** 今天的起止（精确到秒），用作区间筛选的默认值 */
 export function todayMomentRange(): [string, string] {
   const day = todayText()
-  return [`${day}T00:00`, `${day}T23:59`]
+  return [`${day}T00:00:00`, `${day}T23:59:59`]
 }
 
-/** 默认区间：daysBack 天前的 hour:00 到今天 hour:00（操作人汇总用，按早班交接点切） */
+/** 默认区间：daysBack 天前的 hour:00:00 到今天 hour:00:00（操作人汇总用，按早班交接点切） */
 export function recentMorningRange(daysBack = 3, hour = 8): [string, string] {
   const stamp = (offset: number) => {
     const date = new Date()
     date.setDate(date.getDate() - offset)
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
   }
-  const hhmm = `${pad(hour)}:00`
-  return [`${stamp(daysBack)}T${hhmm}`, `${stamp(0)}T${hhmm}`]
+  const hhmmss = `${pad(hour)}:00:00`
+  return [`${stamp(daysBack)}T${hhmmss}`, `${stamp(0)}T${hhmmss}`]
 }
 
 /** 日期时间区间选择器的快捷项 */
@@ -98,7 +109,7 @@ export function momentShortcuts() {
   const dayEnd = (offset: number) => {
     const date = new Date()
     date.setDate(date.getDate() - offset)
-    date.setHours(23, 59, 0, 0)
+    date.setHours(23, 59, 59, 0)
     return date
   }
   return [

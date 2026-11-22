@@ -4,8 +4,8 @@
       <el-date-picker
         v-model="dateRange"
         type="datetimerange"
-        value-format="YYYY-MM-DDTHH:mm"
-        format="MM-DD HH:mm"
+        value-format="YYYY-MM-DDTHH:mm:ss"
+        format="MM-DD HH:mm:ss"
         range-separator="至"
         start-placeholder="开始时间"
         end-placeholder="结束时间"
@@ -330,7 +330,8 @@ function endOfMonth(offset = 0): Date {
 function momentText(value: Date): string {
   const hh = String(value.getHours()).padStart(2, '0')
   const mm = String(value.getMinutes()).padStart(2, '0')
-  return `${dayText(value)}T${hh}:${mm}`
+  const ss = String(value.getSeconds()).padStart(2, '0')
+  return `${dayText(value)}T${hh}:${mm}:${ss}`
 }
 
 const shortcuts = [

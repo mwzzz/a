@@ -22,19 +22,19 @@
       </div>
     </div>
 
-    <div v-if="blocked" class="blocked-tip">
-      该玩家还有赠金 ¥{{ formatCents(player?.bonus_cents || 0) }}，赠金不能退。
-      请先用赠金扣茶水，赠金为 0 后再退押金。
+    <div v-if="mode === 'refund' && hasBonus" class="blocked-tip">
+      该玩家还有赠金 ¥{{ formatCents(player?.bonus_cents || 0) }}，赠金不参与退款；
+      本次最多可退现金押金 ¥{{ formatCents(player?.deposit_cents || 0) }}。
     </div>
 
     <el-form label-width="76px" class="form">
       <el-form-item label="金额">
-        <el-input v-model="amount" placeholder="0.00" autocomplete="off" :disabled="blocked">
+        <el-input v-model="amount" placeholder="0.00" autocomplete="off">
           <template #prefix>¥</template>
         </el-input>
       </el-form-item>
       <el-form-item label="备注">
-        <el-input v-model="note" placeholder="可选" maxlength="200" :disabled="blocked" />
+        <el-input v-model="note" placeholder="可选" maxlength="200" />
       </el-form-item>
     </el-form>
 
@@ -73,7 +73,7 @@
       <el-button
         :type="mode === 'bonus' ? 'warning' : 'primary'"
         :loading="saving"
-        :disabled="blocked || Boolean(error)"
+        :disabled="Boolean(error)"
         @click="submit"
       >
         确认
@@ -135,9 +135,7 @@ const estimatedBonus = computed(() =>
   props.mode === 'add' ? matchedCampaign.value?.bonus_cents || 0 : 0,
 )
 
-const blocked = computed(
-  () => props.mode === 'refund' && (props.player?.bonus_cents || 0) > 0,
-)
+const hasBonus = computed(() => (props.player?.bonus_cents || 0) > 0)
 
 const after = computed(() => {
   if (parsed.value === null || !props.player) return null
@@ -169,9 +167,6 @@ const previewLabel = computed(() =>
 )
 
 const error = computed(() => {
-  if (blocked.value) {
-    return `该玩家还有赠金 ¥${formatCents(props.player?.bonus_cents || 0)}，不能退押金`
-  }
   if (!amount.value.trim()) return ''
   if (parsed.value === null) return '金额格式不正确，最多两位小数'
   if (parsed.value <= 0) return `${title.value}金额必须大于 0`
@@ -206,12 +201,7 @@ watch(
     note.value = ''
     campaignError.value = false
     campaigns.value = []
-    if (
-      props.mode === 'refund' &&
-      props.player &&
-      props.player.deposit_cents > 0 &&
-      props.player.bonus_cents === 0
-    ) {
+    if (props.mode === 'refund' && props.player && props.player.deposit_cents > 0) {
       amount.value = formatCents(props.player.deposit_cents)
     } else {
       amount.value = ''
